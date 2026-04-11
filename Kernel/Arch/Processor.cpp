@@ -19,8 +19,7 @@ namespace Kernel {
 READONLY_AFTER_INIT FPUState s_clean_fpu_state;
 READONLY_AFTER_INIT Atomic<u32> g_total_processors;
 
-template<typename T>
-void ProcessorBase<T>::check_invoke_scheduler()
+void ProcessorBase::check_invoke_scheduler()
 {
     VERIFY_INTERRUPTS_DISABLED();
     VERIFY(!m_in_irq);
@@ -31,10 +30,8 @@ void ProcessorBase<T>::check_invoke_scheduler()
         Scheduler::invoke_async();
     }
 }
-template void ProcessorBase<Processor>::check_invoke_scheduler();
 
-template<typename T>
-void ProcessorBase<T>::deferred_call_queue(Function<void()> callback)
+void ProcessorBase::deferred_call_queue(Function<void()> callback)
 {
     // NOTE: If we are called outside of a critical section and outside
     // of an irq handler, the function will be executed before we return!
@@ -46,19 +43,17 @@ void ProcessorBase<T>::deferred_call_queue(Function<void()> callback)
 
     cur_proc.m_deferred_call_pool.queue_entry(entry);
 }
-template void ProcessorBase<Processor>::deferred_call_queue(Function<void()>);
 
-template<typename T>
-void ProcessorBase<T>::enter_trap(TrapFrame& trap, bool raise_irq)
+void ProcessorBase::enter_trap(TrapFrame& trap, bool raise_irq)
 {
     VERIFY_INTERRUPTS_DISABLED();
     VERIFY(&Processor::current() == this);
-#if ARCH(X86_64)
-    // FIXME: Figure out if we need prev_irq_level
-    trap.prev_irq_level = m_in_irq;
-#endif
+
+    // m_in_irq is always <= 1 since nested interrupts don't happen
+    // (because we never re-enable interrupts during interrupt handling).
     if (raise_irq)
-        m_in_irq++;
+        m_in_irq = 1;
+
     auto* current_thread = Processor::current_thread();
     if (current_thread) {
         auto& current_trap = current_thread->current_trap();
@@ -72,25 +67,32 @@ void ProcessorBase<T>::enter_trap(TrapFrame& trap, bool raise_irq)
         trap.next_trap = nullptr;
     }
 }
-template void ProcessorBase<Processor>::enter_trap(TrapFrame&, bool);
 
-template<typename T>
-u64 ProcessorBase<T>::time_spent_idle() const
+InterruptsState ProcessorBase::interrupts_state()
+{
+    return ProcessorBase::are_interrupts_enabled() ? InterruptsState::Enabled : InterruptsState::Disabled;
+}
+
+void ProcessorBase::restore_interrupts_state(InterruptsState interrupts_state)
+{
+    if (interrupts_state == InterruptsState::Enabled)
+        ProcessorBase::enable_interrupts();
+    else
+        ProcessorBase::disable_interrupts();
+}
+
+u64 ProcessorBase::time_spent_idle() const
 {
     return m_idle_thread->time_in_user() + m_idle_thread->time_in_kernel();
 }
-template u64 ProcessorBase<Processor>::time_spent_idle() const;
 
-template<typename T>
-void ProcessorBase<T>::leave_critical()
+void ProcessorBase::leave_critical()
 {
     InterruptDisabler disabler;
     current().do_leave_critical();
 }
-template void ProcessorBase<Processor>::leave_critical();
 
-template<typename T>
-void ProcessorBase<T>::do_leave_critical()
+void ProcessorBase::do_leave_critical()
 {
     VERIFY(m_in_critical > 0);
     if (m_in_critical == 1) {
@@ -105,7 +107,6 @@ void ProcessorBase<T>::do_leave_critical()
         m_in_critical = m_in_critical - 1;
     }
 }
-template void ProcessorBase<Processor>::do_leave_critical();
 
 void exit_kernel_thread(void)
 {
@@ -135,8 +136,7 @@ void do_context_first_init(Thread* from_thread, Thread* to_thread)
     Scheduler::leave_on_first_switch(InterruptsState::Disabled);
 }
 
-template<typename T>
-ErrorOr<Vector<FlatPtr, 32>> ProcessorBase<T>::capture_stack_trace(Thread& thread, size_t max_frames)
+ErrorOr<Vector<FlatPtr, 32>> ProcessorBase::capture_stack_trace(Thread& thread, size_t max_frames)
 {
     FlatPtr frame_ptr = 0, pc = 0;
     Vector<FlatPtr, 32> stack_trace;
@@ -264,6 +264,62 @@ ErrorOr<Vector<FlatPtr, 32>> ProcessorBase<T>::capture_stack_trace(Thread& threa
 
     return stack_trace;
 }
-template ErrorOr<Vector<FlatPtr, 32>> ProcessorBase<Processor>::capture_stack_trace(Thread&, size_t);
+
+void ProcessorBase::exit_trap(TrapFrame& trap)
+{
+    VERIFY_INTERRUPTS_DISABLED();
+    VERIFY(&Processor::current() == this);
+
+    // Temporarily enter a critical section. This is to prevent critical
+    // sections entered and left within e.g. smp_process_pending_messages
+    // to trigger a context switch while we're executing this function
+    // See the comment at the end of the function why we don't use
+    // ScopedCritical here.
+    m_in_critical = m_in_critical + 1;
+
+    m_in_irq = 0;
+
+#if ARCH(X86_64)
+    auto* self = static_cast<Processor*>(this);
+    if (is_smp_enabled())
+        self->smp_process_pending_messages();
+#endif
+
+    // Process the deferred call queue. Among other things, this ensures
+    // that any pending thread unblocks happen before we enter the scheduler.
+    m_deferred_call_pool.execute_pending();
+
+    Optional<ExecutionMode> new_previous_mode = {};
+    auto* current_thread = Processor::current_thread();
+    if (current_thread) {
+        if (trap.next_trap) {
+            VERIFY(trap.next_trap->regs);
+            // If we have another higher level trap then we probably returned
+            // from an interrupt or irq handler.
+            new_previous_mode = trap.next_trap->regs->previous_mode();
+        } else {
+            // If we don't have a higher level trap then we're back in user mode.
+            // Which means that the previous mode prior to being back in user mode was kernel mode
+            new_previous_mode = ExecutionMode::Kernel;
+        }
+        if (current_thread->previous_mode() != *new_previous_mode)
+            current_thread->update_time_scheduled(TimeManagement::scheduler_current_time(), true, false);
+    }
+
+    VERIFY_INTERRUPTS_DISABLED();
+
+    // Leave the critical section without actually enabling interrupts.
+    // We don't want context switches to happen until we're explicitly
+    // triggering a switch in check_invoke_scheduler.
+    m_in_critical = m_in_critical - 1;
+    if (!m_in_irq && !m_in_critical)
+        check_invoke_scheduler();
+
+    if (current_thread) {
+        VERIFY(new_previous_mode.has_value());
+        current_thread->current_trap() = trap.next_trap;
+        current_thread->set_previous_mode(*new_previous_mode);
+    }
+}
 
 }

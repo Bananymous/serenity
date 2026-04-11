@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021, Idan Horowitz <idan.horowitz@serenityos.org>
+ * Copyright (c) 2025, the SerenityOS developers.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -54,9 +55,9 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         auto file = TRY(Core::File::open(path, Core::File::OpenMode::Read));
         auto stat = TRY(Core::System::fstat(file->fd()));
-        auto date = Core::DateTime::from_timestamp(stat.st_mtim.tv_sec);
+        auto date = Core::DateTime::from_timestamp(stat.st_mtime);
 
-        auto information = TRY(zip_stream.add_member_from_stream(canonicalized_path, *file, date));
+        auto information = TRY(zip_stream.add_member_from_stream(canonicalized_path, *file, date, stat.st_mode));
         if (information.compression_ratio < 1.f) {
             outln("  adding: {} (deflated {}%)", canonicalized_path, (int)(information.compression_ratio * 100));
         } else {
@@ -70,8 +71,8 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         auto canonicalized_path = TRY(String::formatted("{}/", LexicalPath::canonicalized_path(path)));
 
         auto stat = TRY(Core::System::stat(path));
-        auto date = Core::DateTime::from_timestamp(stat.st_mtim.tv_sec);
-        TRY(zip_stream.add_directory(canonicalized_path, date));
+        auto date = Core::DateTime::from_timestamp(stat.st_mtime);
+        TRY(zip_stream.add_directory(canonicalized_path, date, stat.st_mode));
 
         if (!recurse)
             return {};

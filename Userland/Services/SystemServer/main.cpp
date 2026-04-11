@@ -18,7 +18,9 @@
 #include <LibCore/Event.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/File.h>
+#include <LibCore/FileWatcher.h>
 #include <LibCore/System.h>
+#include <LibCore/Timer.h>
 #include <LibMain/Main.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -101,41 +103,58 @@ static ErrorOr<void> determine_system_mode()
 
 static ErrorOr<void> activate_services(Core::ConfigFile const& config)
 {
+    Vector<NonnullRefPtr<Service>> services_to_activate;
     for (auto const& name : config.groups()) {
         auto service = TRY(Service::try_create(config, name));
         if (service->is_enabled_for_system_mode(g_system_mode)) {
             TRY(service->setup_sockets());
             g_services.append(move(service));
+            services_to_activate.append(g_services.last());
         }
     }
-    // After we've set them all up, activate them!
-    dbgln("Activating {} services...", g_services.size());
-    for (auto& service : g_services) {
+
+    // After we've set them all up, activate only those just added!
+    dbgln("Activating {} services...", services_to_activate.size());
+    for (auto& service : services_to_activate) {
         dbgln_if(SYSTEMSERVER_DEBUG, "Activating {}", service->name());
         if (auto result = service->activate(); result.is_error())
             dbgln("{}: {}", service->name(), result.release_error());
     }
-
     return {};
 }
 
 static ErrorOr<void> activate_base_services_based_on_system_mode()
 {
     if (g_system_mode == graphical_system_mode) {
-        bool found_gpu_device = false;
-        for (int attempt = 0; attempt < 10; attempt++) {
-            struct stat file_state;
-            int rc = lstat("/dev/gpu/connector0", &file_state);
-            if (rc == 0) {
-                found_gpu_device = true;
-                break;
-            }
-            sleep(1);
-        }
-        if (!found_gpu_device) {
+        bool done_searching_for_gpu = false;
+
+        auto timeout = Core::Timer::create_single_shot(10000, [&]() {
             dbgln("WARNING: No device nodes at /dev/gpu/ directory after 10 seconds. This is probably a sign of disabled graphics functionality.");
             dbgln("To cope with this, graphical mode will not be enabled.");
             g_system_mode = text_system_mode;
+
+            done_searching_for_gpu = true;
+        });
+
+        auto log = Core::Timer::create_single_shot(1000, [&]() {
+            dbgln("Waiting on /dev/gpu/connector0 to appear...");
+        });
+
+        auto watcher = TRY(Core::FileWatcher::create());
+        watcher->on_change = [&](Core::FileWatcherEvent const& event) {
+            if (event.event_path != "/dev/gpu/connector0"sv)
+                return;
+            done_searching_for_gpu = true;
+        };
+
+        TRY(watcher->add_watch("/dev/gpu/", Core::FileWatcherEvent::Type::ChildCreated));
+
+        // The GPU might have appeared while we were setting up the watcher.
+        // Only wait for the file if we can't stat it.
+        if (Core::System::lstat("/dev/gpu/connector0"sv).is_error()) {
+            log->start();
+            timeout->start();
+            Core::EventLoop::current().spin_until([&]() { return done_searching_for_gpu; });
         }
     }
 
@@ -148,10 +167,15 @@ static ErrorOr<void> activate_base_services_based_on_system_mode()
 
 static ErrorOr<void> activate_user_services_based_on_system_mode()
 {
-    // Read our config and instantiate services.
+    // Read system wide user config and instantiate services.
     // This takes care of setting up sockets.
-    auto config = TRY(Core::ConfigFile::open_for_app("SystemServer"));
+    auto config = TRY(Core::ConfigFile::open_for_system("SystemServerUser"));
     TRY(activate_services(*config));
+
+    // Try to read user config and instantiate services.
+    if (auto config = Core::ConfigFile::open_for_app("SystemServer"); !config.is_error()) {
+        TRY(activate_services(config.release_value()));
+    }
     return {};
 }
 

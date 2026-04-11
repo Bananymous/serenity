@@ -79,8 +79,7 @@ ErrorOr<void> PCIeTransportLink::locate_configurations_and_resources(Badge<VirtI
     TRY(create_interrupt_handler(parent_device));
     PCI::enable_bus_mastering(device_identifier());
 
-    auto capabilities = device_identifier().capabilities();
-    for (auto& capability : capabilities) {
+    for (auto const& capability : device_identifier().capabilities()) {
         if (capability.id().value() == PCI::Capabilities::ID::VendorSpecific) {
             // We have a virtio_pci_cap
             Configuration config {};
@@ -131,7 +130,7 @@ ErrorOr<void> PCIeTransportLink::locate_configurations_and_resources(Badge<VirtI
             else if (config.cfg_type == ConfigurationType::Notify)
                 m_notify_multiplier = capability.read32(0x10);
 
-            m_configs.append(config);
+            TRY(m_configs.try_append(config));
         }
     }
 

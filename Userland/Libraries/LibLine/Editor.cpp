@@ -21,6 +21,8 @@
 #include <LibCore/Event.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/Notifier.h>
+#include <LibFileSystem/FileSystem.h>
+#include <LibFileSystem/TempFile.h>
 #include <LibUnicode/Segmentation.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -340,18 +342,30 @@ bool Editor::save_history(ByteString const& path)
             [](HistoryEntry const& left, HistoryEntry const& right) { return left.timestamp < right.timestamp; });
     }
 
-    auto file_or_error = Core::File::open(path, Core::File::OpenMode::Write, 0600);
-    if (file_or_error.is_error())
+    auto temp_or_error = FileSystem::TempFile::create_temp_file();
+    if (temp_or_error.is_error())
         return false;
-    auto file = file_or_error.release_value();
-    // Skip the dummy entry:
-    for (auto iter = final_history.begin() + 1; iter != final_history.end(); ++iter) {
-        auto const& entry = *iter;
-        auto buffer = ByteString::formatted("{}::{}\n\n", entry.timestamp, entry.entry);
-        auto maybe_error = file->write_until_depleted(buffer.bytes());
-        if (maybe_error.is_error())
+
+    auto temp_file = temp_or_error.release_value();
+
+    {
+        auto file_or_error = Core::File::open(temp_file->path(), Core::File::OpenMode::Write, 0600);
+        if (file_or_error.is_error())
             return false;
+        auto file = file_or_error.release_value();
+        // Skip the dummy entry:
+        for (auto iter = final_history.begin() + 1; iter != final_history.end(); ++iter) {
+            auto const& entry = *iter;
+            auto buffer = ByteString::formatted("{}::{}\n\n", entry.timestamp, entry.entry);
+            auto maybe_error = file->write_until_depleted(buffer.bytes());
+            if (maybe_error.is_error())
+                return false;
+        }
     }
+
+    auto result = FileSystem::copy_file_or_directory(path, temp_file->path(), FileSystem::RecursionMode::Disallowed, FileSystem::LinkMode::Disallowed, FileSystem::AddDuplicateFileMarker::No);
+    if (result.is_error())
+        return false;
 
     m_history_dirty = false;
     return true;
@@ -1940,7 +1954,6 @@ StringMetrics Editor::actual_rendered_string_metrics(Utf32View const& view, RedB
 
     for (size_t break_index = 0; break_index < grapheme_breaks.size(); ++break_index) {
         auto i = grapheme_breaks[break_index];
-        auto c = view[i];
         if (!mask_it.is_end() && mask_it.key() <= i)
             mask = *mask_it;
 
@@ -1950,8 +1963,20 @@ StringMetrics Editor::actual_rendered_string_metrics(Utf32View const& view, RedB
             continue;
         }
 
+        auto next_grapheme_start = break_index + 1 < grapheme_breaks.size() ? grapheme_breaks[break_index + 1] : view.length();
         auto next_c = break_index + 1 < grapheme_breaks.size() ? view.code_points()[grapheme_breaks[break_index + 1]] : 0;
+        auto c = view[i];
         state = actual_rendered_string_length_step(metrics, i, current_line, c, next_c, state, mask, maximum_line_width, last_return);
+
+        for (size_t j = i + 1; j < next_grapheme_start; ++j) {
+            // Consume the rest of the code points in this grapheme cluster without updating the state; this is just to account for their length properly.
+            current_line.length++;
+            current_line.visible_length++;
+            metrics.total_length++;
+            if (current_line.bit_length.has_value())
+                current_line.bit_length.value() += code_point_length_in_utf8(view[j]);
+        }
+
         if (!mask_it.is_end() && mask_it.key() <= i) {
             auto mask_it_peek = mask_it;
             ++mask_it_peek;

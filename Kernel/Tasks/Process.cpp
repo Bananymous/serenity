@@ -53,12 +53,12 @@ extern KString* g_version_string;
 
 RecursiveSpinlock<LockRank::None> g_profiling_lock {};
 static Atomic<pid_t> next_pid;
-static Singleton<SpinlockProtected<Process::AllProcessesList, LockRank::None>> s_all_instances;
+static Singleton<RecursiveSpinlockProtected<Process::AllProcessesList, LockRank::None>> s_all_instances;
 READONLY_AFTER_INIT Memory::Region* g_signal_trampoline_region;
 
 static RawPtr<HostnameContext> s_empty_kernel_hostname_context;
 
-SpinlockProtected<Process::AllProcessesList, LockRank::None>& Process::all_instances()
+RecursiveSpinlockProtected<Process::AllProcessesList, LockRank::None>& Process::all_instances()
 {
     return *s_all_instances;
 }
@@ -211,7 +211,7 @@ void Process::register_new(Process& process)
     });
 }
 
-ErrorOr<Process::ProcessAndFirstThread> Process::create_user_process(StringView path, UserID uid, GroupID gid, Vector<NonnullOwnPtr<KString>> arguments, Vector<NonnullOwnPtr<KString>> environment, NonnullRefPtr<VFSRootContext> vfs_root_context, NonnullRefPtr<HostnameContext> hostname_context, RefPtr<TTY> tty)
+ErrorOr<Process::ProcessAndFirstThread> Process::create_userland_init_process(StringView path, Vector<NonnullOwnPtr<KString>> arguments, NonnullRefPtr<VFSRootContext> vfs_root_context, NonnullRefPtr<HostnameContext> hostname_context, RefPtr<TTY> tty)
 {
     auto parts = path.split_view('/');
     if (arguments.is_empty()) {
@@ -224,7 +224,7 @@ ErrorOr<Process::ProcessAndFirstThread> Process::create_user_process(StringView 
     auto vfs_root_context_root_custody = vfs_root_context->root_custody().with([](auto& custody) -> NonnullRefPtr<Custody> {
         return custody;
     });
-    auto [process, first_thread] = TRY(Process::create(parts.last(), uid, gid, ProcessID(0), false, vfs_root_context, hostname_context, vfs_root_context_root_custody, nullptr, tty));
+    auto [process, first_thread] = TRY(Process::create_spawned(UserID(0), GroupID(0), ProcessID(0), vfs_root_context, hostname_context, vfs_root_context_root_custody, tty));
 
     TRY(process->m_fds.with_exclusive([&](auto& fds) -> ErrorOr<void> {
         TRY(fds.try_resize(Process::OpenFileDescriptions::max_open()));
@@ -246,12 +246,9 @@ ErrorOr<Process::ProcessAndFirstThread> Process::create_user_process(StringView 
 
     Thread* new_main_thread = nullptr;
     InterruptsState previous_interrupts_state = InterruptsState::Enabled;
-    TRY(process->exec(move(path_string), move(arguments), move(environment), new_main_thread, previous_interrupts_state));
+    TRY(process->exec(move(path_string), move(arguments), {}, new_main_thread, previous_interrupts_state, ProcessEventType::Create));
 
-    register_new(*process);
-
-    // NOTE: All user processes have a leaked ref on them. It's balanced by Thread::WaitBlockerSet::finalize().
-    process->ref();
+    commit_creation(process);
 
     {
         SpinlockLocker lock(g_scheduler_lock);
@@ -264,7 +261,7 @@ ErrorOr<Process::ProcessAndFirstThread> Process::create_user_process(StringView 
 ErrorOr<Process::ProcessAndFirstThread> Process::create_kernel_process(StringView name, void (*entry)(void*), void* entry_data, u32 affinity, RegisterProcess do_register)
 {
     VERIFY(s_empty_kernel_hostname_context);
-    auto process_and_first_thread = TRY(Process::create(name, UserID(0), GroupID(0), ProcessID(0), true, VFSRootContext::empty_context_for_kernel_processes(), *s_empty_kernel_hostname_context));
+    auto process_and_first_thread = TRY(Process::create_impl(name, UserID(0), GroupID(0), ProcessID(0), true, VFSRootContext::empty_context_for_kernel_processes(), *s_empty_kernel_hostname_context));
     auto& process = *process_and_first_thread.process;
     auto& thread = *process_and_first_thread.first_thread;
 
@@ -293,16 +290,35 @@ void Process::unprotect_data()
     });
 }
 
-ErrorOr<Process::ProcessAndFirstThread> Process::create_with_forked_name(UserID uid, GroupID gid, ProcessID ppid, bool is_kernel_process, NonnullRefPtr<VFSRootContext> vfs_root_context, NonnullRefPtr<HostnameContext> hostname_context, RefPtr<Custody> current_directory, RefPtr<Custody> executable, RefPtr<TTY> tty, Process* fork_parent)
+ErrorOr<Process::ProcessAndFirstThread> Process::create_from_fork(Process& parent)
 {
+    VERIFY(!parent.is_kernel_process());
+    auto const& credentials = parent.credentials();
+
     Process::Name name {};
-    Process::current().name().with([&name](auto& process_name) {
+    parent.name().with([&name](auto& process_name) {
         name.store_characters(process_name.representable_view());
     });
-    return TRY(Process::create(name.representable_view(), uid, gid, ppid, is_kernel_process, move(vfs_root_context), move(hostname_context), current_directory, executable, tty, fork_parent));
+
+    return Process::create_impl(name.representable_view(),
+        credentials->uid(), credentials->gid(), parent.pid(),
+        parent.is_kernel_process(), parent.vfs_root_context(),
+        parent.hostname_context(), parent.current_directory(),
+        parent.executable(), parent.tty(), &parent);
 }
 
-ErrorOr<Process::ProcessAndFirstThread> Process::create(StringView name, UserID uid, GroupID gid, ProcessID ppid, bool is_kernel_process, NonnullRefPtr<VFSRootContext> vfs_root_context, NonnullRefPtr<HostnameContext> hostname_context, RefPtr<Custody> current_directory, RefPtr<Custody> executable, RefPtr<TTY> tty, Process* fork_parent)
+ErrorOr<Process::ProcessAndFirstThread> Process::create_spawned(UserID uid, GroupID gid, ProcessID ppid, NonnullRefPtr<VFSRootContext> vfs_root_context, NonnullRefPtr<HostnameContext> hostname_context, NonnullRefPtr<Custody> current_directory, RefPtr<TTY> tty)
+{
+    // This name shouldn't be visible as we will `exec` on this process before
+    // commiting it.
+    return Process::create_impl("PLACEHOLDER NAME"sv,
+        uid, gid, ppid,
+        false, vfs_root_context,
+        hostname_context, current_directory,
+        nullptr, tty, nullptr);
+}
+
+ErrorOr<Process::ProcessAndFirstThread> Process::create_impl(StringView name, UserID uid, GroupID gid, ProcessID ppid, bool is_kernel_process, NonnullRefPtr<VFSRootContext> vfs_root_context, NonnullRefPtr<HostnameContext> hostname_context, RefPtr<Custody> current_directory, RefPtr<Custody> executable, RefPtr<TTY> tty, Process* fork_parent)
 {
     auto unveil_tree = UnveilNode { TRY(KString::try_create("/"sv)), UnveilMetadata(TRY(KString::try_create("/"sv))) };
     auto exec_unveil_tree = UnveilNode { TRY(KString::try_create("/"sv)), UnveilMetadata(TRY(KString::try_create("/"sv))) };
@@ -323,6 +339,20 @@ ErrorOr<Process::ProcessAndFirstThread> Process::create(StringView name, UserID 
     auto first_thread = TRY(process->attach_resources(new_address_space.release_nonnull(), fork_parent));
 
     return ProcessAndFirstThread { move(process), move(first_thread) };
+}
+
+void Process::commit_creation(NonnullRefPtr<Process>& process)
+{
+    if (!process->m_is_kernel_process) {
+        Process::register_new(*process);
+
+        // NOTE: All user processes have a leaked ref on them. It's balanced by Thread::WaitBlockerSet::finalize().
+        process->ref();
+    }
+
+    // PERF_EVENT_PROCESS_CREATE for spawned processes is emitted when calling `exec`.
+    if (process->m_is_kernel_process || process->executable())
+        PerformanceManager::add_process_created_event(*process);
 }
 
 Process::Process(StringView name, NonnullRefPtr<Credentials> credentials, ProcessID ppid, bool is_kernel_process, NonnullRefPtr<VFSRootContext> vfs_root_context, NonnullRefPtr<HostnameContext> hostname_context, RefPtr<Custody> current_directory, RefPtr<Custody> executable, RefPtr<TTY> tty, UnveilNode unveil_tree, UnveilNode exec_unveil_tree, UnixDateTime creation_time)
@@ -484,7 +514,9 @@ void signal_trampoline_dummy()
         "asm_signal_trampoline:\n"
 
         // Store a0 (return value from a syscall) into the register slot, such that we can return the correct value in sys$sigreturn.
-        "sd a0, %[offset_to_return_value_slot](sp)\n"
+        "lui t0, %%hi(%[offset_to_return_value_slot])\n" // FIXME: Move the return value slot before the FPUState to avoid having an extra lui+add pair here.
+        "add t0, t0, sp\n"
+        "sd a0, %%lo(%[offset_to_return_value_slot])(t0)\n"
         // Load the handler address into t0.
         "ld t0, 0(sp)\n"
         // Load the signal number into the first argument.
@@ -799,10 +831,19 @@ ErrorOr<void> Process::dump_core()
         return {};
     }
     auto coredump_path = TRY(name().with([&](auto& process_name) {
-        return KString::formatted("{}/{}_{}_{}", coredump_directory_path->view(), process_name.representable_view(), pid().value(), kgettimeofday().seconds_since_epoch());
+        return KString::formatted("{}/{}_{}_{}.partial", coredump_directory_path->view(), process_name.representable_view(), pid().value(), kgettimeofday().seconds_since_epoch());
     }));
     auto coredump = TRY(Coredump::try_create(*this, coredump_path->view()));
-    return coredump->write();
+    TRY(coredump->write());
+
+    auto root_custody = vfs_root_context()->root_custody().with([](auto& custody) -> NonnullRefPtr<Custody> {
+        return custody;
+    });
+
+    auto new_path = TRY(KString::try_create(coredump_path->view().trim(".partial"sv)));
+    TRY(VirtualFileSystem::rename(vfs_root_context(), credentials(), *root_custody, coredump_path->view(), *root_custody, new_path->view()));
+
+    return {};
 }
 
 ErrorOr<void> Process::dump_perfcore()
@@ -906,8 +947,9 @@ void Process::finalize()
     m_state.store(State::Dead, AK::MemoryOrder::memory_order_release);
 
     {
-        if (auto parent_process = Process::from_pid_ignoring_process_lists(ppid())) {
-            if (parent_process->is_user_process() && (parent_process->m_signal_action_data[SIGCHLD].flags & SA_NOCLDWAIT) != SA_NOCLDWAIT)
+        if (is_fully_initialized()) {
+            auto parent_process = Process::from_pid_ignoring_process_lists(ppid());
+            if (parent_process && parent_process->is_user_process() && (parent_process->m_signal_action_data[SIGCHLD].flags & SA_NOCLDWAIT) != SA_NOCLDWAIT)
                 (void)parent_process->send_signal(SIGCHLD, this);
         }
     }
@@ -919,7 +961,8 @@ void Process::finalize()
         }
     }
 
-    unblock_waiters(Thread::WaitBlocker::UnblockFlags::Terminated);
+    if (is_fully_initialized())
+        unblock_waiters(Thread::WaitBlocker::UnblockFlags::Terminated);
 
     m_space.with([](auto& space) { space->remove_all_regions({}); });
 
@@ -928,7 +971,8 @@ void Process::finalize()
     // reference if there are still waiters around, or whenever the last
     // waitable states are consumed. Unless there is no parent around
     // anymore, in which case we'll just drop it right away.
-    m_wait_blocker_set.finalize();
+    if (is_fully_initialized())
+        m_wait_blocker_set.finalize();
 }
 
 void Process::disowned_by_waiter(Process& process)
@@ -971,18 +1015,25 @@ void Process::die()
         return;
     }
 
-    // Let go of the TTY, otherwise a slave PTY may keep the master PTY from
-    // getting an EOF when the last process using the slave PTY dies.
-    // If the master PTY owner relies on an EOF to know when to wait() on a
-    // slave owner, we have to allow the PTY pair to be torn down.
-    with_mutable_protected_data([&](auto& protected_data) { protected_data.tty = nullptr; });
+    {
+        SpinlockLocker lock(g_scheduler_lock);
+        set_stopped(false);
 
-    VERIFY(m_threads_for_coredump.is_empty());
-    for_each_thread([&](auto& thread) {
-        auto result = m_threads_for_coredump.try_append(thread);
-        if (result.is_error())
-            dbgln("Failed to add thread {} to coredump due to OOM", thread.tid());
-    });
+        // Let go of the TTY, otherwise a slave PTY may keep the master PTY from
+        // getting an EOF when the last process using the slave PTY dies.
+        // If the master PTY owner relies on an EOF to know when to wait() on a
+        // slave owner, we have to allow the PTY pair to be torn down.
+        with_mutable_protected_data([&](auto& protected_data) { protected_data.tty = nullptr; });
+
+        VERIFY(m_threads_for_coredump.is_empty());
+        for_each_thread([&](auto& thread) {
+            auto result = m_threads_for_coredump.try_append(thread);
+            if (result.is_error())
+                dbgln("Failed to add thread {} to coredump due to OOM", thread.tid());
+        });
+
+        kill_all_threads();
+    }
 
     all_instances().with([&](auto const& list) {
         for (auto it = list.begin(); it != list.end();) {
@@ -1006,8 +1057,6 @@ void Process::die()
             }
         }
     });
-
-    kill_all_threads();
 }
 
 void Process::terminate_due_to_signal(u8 signal)
@@ -1286,6 +1335,59 @@ ErrorOr<Process::MountTargetContext> Process::context_for_mount_operation(int vf
     return MountTargetContext { *target_custody.release_nonnull(), *vfs_root_context };
 }
 
+void Process::replace_vfs_root_context(VFSRootContext& new_context)
+{
+    m_attached_vfs_root_context.with([&new_context](auto& context) {
+        if (context.ptr() == &new_context)
+            return;
+        VERIFY(context);
+        context->detach({});
+        context = new_context;
+        new_context.attach({});
+    });
+}
+
+void Process::replace_hostname_context(HostnameContext& new_context)
+{
+    m_attached_hostname_context.with([&new_context](auto& context) {
+        if (context.ptr() == &new_context)
+            return;
+        VERIFY(context);
+        context->detach({});
+        context = new_context;
+        new_context.set_attached({});
+    });
+}
+
+void Process::replace_scoped_process_list(ScopedProcessList& list)
+{
+    m_scoped_process_list.with([this, &list](auto& list_ptr) {
+        if (list_ptr.ptr() == &list)
+            return;
+        if (list_ptr) {
+            list_ptr->attached_processes().with([&](auto& list) {
+                list.remove(*this);
+            });
+            list_ptr->detach({});
+        }
+        list_ptr = list;
+        list_ptr->attach(*this);
+    });
+}
+
+void Process::replace_resource(VFSRootContext& context)
+{
+    replace_vfs_root_context(context);
+}
+void Process::replace_resource(HostnameContext& context)
+{
+    replace_hostname_context(context);
+}
+void Process::replace_resource(ScopedProcessList& list)
+{
+    replace_scoped_process_list(list);
+}
+
 ErrorOr<NonnullRefPtr<Custody>> Process::custody_for_dirfd(Badge<CustodyBase>, int dirfd)
 {
     return custody_for_dirfd(dirfd);
@@ -1303,13 +1405,14 @@ ErrorOr<NonnullRefPtr<Custody>> Process::custody_for_dirfd(int dirfd)
     return *description->custody();
 }
 
-SpinlockProtected<Process::Name, LockRank::None> const& Process::name() const
+RecursiveSpinlockProtected<Process::Name, LockRank::None> const& Process::name() const
 {
     return m_name;
 }
 
 void Process::set_name(StringView name)
 {
+    VERIFY(!name.is_empty());
     m_name.with([name](auto& process_name) {
         process_name.store_characters(name);
     });

@@ -38,6 +38,10 @@
 #    cmakedefine01 CANVAS_RENDERING_CONTEXT_2D_DEBUG
 #endif
 
+#ifndef CCITT_DEBUG
+#    cmakedefine01 CCITT_DEBUG
+#endif
+
 #ifndef CFF_DEBUG
 #    cmakedefine01 CFF_DEBUG
 #endif
@@ -456,6 +460,10 @@
 
 #ifndef SQL_DEBUG
 #    cmakedefine01 SQL_DEBUG
+#endif
+
+#ifndef SSH_DEBUG
+#    cmakedefine01 SSH_DEBUG
 #endif
 
 #ifndef SQLSERVER_DEBUG

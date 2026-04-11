@@ -154,16 +154,16 @@ int execv(char const* path, char* const argv[])
 int execve(char const* filename, char* const argv[], char* const envp[])
 {
     size_t arg_count = 0;
-    for (size_t i = 0; argv[i]; ++i)
+    for (size_t i = 0; argv && argv[i]; ++i)
         ++arg_count;
 
     size_t env_count = 0;
-    for (size_t i = 0; envp[i]; ++i)
+    for (size_t i = 0; envp && envp[i]; ++i)
         ++env_count;
 
     auto copy_strings = [&](auto& vec, size_t count, auto& output) {
         output.length = count;
-        for (size_t i = 0; vec[i]; ++i) {
+        for (size_t i = 0; i < count; ++i) {
             output.strings[i].characters = vec[i];
             output.strings[i].length = strlen(vec[i]);
         }
@@ -826,24 +826,6 @@ int faccessat(int dirfd, char const* pathname, int mode, int flags)
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
-// https://pubs.opengroup.org/onlinepubs/9699919799/functions/mknod.html
-int mknod(char const* pathname, mode_t mode, dev_t dev)
-{
-    return mknodat(AT_FDCWD, pathname, mode, dev);
-}
-
-// https://pubs.opengroup.org/onlinepubs/9699919799/functions/mknodat.html
-int mknodat(int dirfd, char const* pathname, mode_t mode, dev_t dev)
-{
-    if (!pathname) {
-        errno = EFAULT;
-        return -1;
-    }
-    Syscall::SC_mknod_params params { { pathname, strlen(pathname) }, mode, dev, dirfd };
-    int rc = syscall(SC_mknod, &params);
-    __RETURN_WITH_ERRNO(rc, rc, -1);
-}
-
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/fpathconf.html
 long fpathconf([[maybe_unused]] int fd, int name)
 {
@@ -1068,7 +1050,7 @@ char* getpass(char const* prompt)
             close(tty);
         });
 
-        struct termios backup { };
+        struct termios backup {};
         if (tcgetattr(tty, &backup) < 0)
             return nullptr;
 

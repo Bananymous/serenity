@@ -19,6 +19,7 @@ class Coredump;
 class Credentials;
 class CustodyBase;
 class Custody;
+class DeprecatedWaitQueue;
 class Device;
 class DeviceControlDevice;
 class DiskCache;
@@ -72,6 +73,7 @@ class UserOrKernelBuffer;
 class VFSRootContext;
 class WaitQueue;
 class WorkQueue;
+class UnsharedResourceFile;
 
 namespace Memory {
 class AddressSpace;

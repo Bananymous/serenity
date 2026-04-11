@@ -10,10 +10,10 @@ we can enforce UTF-8 as the encoding.
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/Include/pyport.h b/Include/pyport.h
-index 2ba81a4be42822655aaae94d675eae59a80d150f..d2d7d5486c2c48ab94152c2601e9cae3f2a634da 100644
+index 2c8567f2554d9b9e9d8e3c33b5392630e74a8f0d..adca272307d1aa0bfb64625ede4ce446e68efd01 100644
 --- a/Include/pyport.h
 +++ b/Include/pyport.h
-@@ -499,7 +499,7 @@ extern "C" {
+@@ -529,7 +529,7 @@ extern "C" {
  #  endif
  #endif
  

@@ -136,11 +136,9 @@ WebContentView::WebContentView(QWidget* window, WebContentOptions const& web_con
     };
 
     on_request_worker_agent = [&]() {
-        RefPtr<Protocol::RequestClient> request_server_client {};
-        if (m_web_content_options.use_lagom_networking == Ladybird::UseLagomNetworking::Yes)
-            request_server_client = static_cast<Ladybird::Application*>(QApplication::instance())->request_server_client;
+        auto& request_server_client = static_cast<Ladybird::Application*>(QApplication::instance())->request_server_client;
 
-        auto worker_client = MUST(launch_web_worker_process(MUST(get_paths_for_helper_process("WebWorker"sv)), request_server_client));
+        auto worker_client = MUST(launch_web_worker_process(MUST(get_paths_for_helper_process("WebWorker"sv)), *request_server_client));
         return worker_client->dup_socket();
     };
 
@@ -517,7 +515,7 @@ void WebContentView::paintEvent(QPaintEvent*)
     }
 
     if (bitmap) {
-        QImage q_image(bitmap->scanline_u8(0), bitmap->width(), bitmap->height(), QImage::Format_RGB32);
+        QImage q_image(bitmap->scanline_u8(0), bitmap->width(), bitmap->height(), bitmap->pitch(), QImage::Format_RGB32);
         painter.drawImage(QPoint(0, 0), q_image, QRect(0, 0, bitmap_size.width(), bitmap_size.height()));
 
         if (bitmap_size.width() < width()) {
@@ -654,14 +652,10 @@ void WebContentView::initialize_client(WebView::ViewImplementation::CreateNewCli
     if (create_new_client == CreateNewClient::Yes) {
         m_client_state = {};
 
-        Optional<IPC::File> request_server_socket;
-        if (m_web_content_options.use_lagom_networking == UseLagomNetworking::Yes) {
-            auto& protocol = static_cast<Ladybird::Application*>(QApplication::instance())->request_server_client;
+        auto& request_server_client = static_cast<Ladybird::Application*>(QApplication::instance())->request_server_client;
 
-            // FIXME: Fail to open the tab, rather than crashing the whole application if this fails
-            auto socket = connect_new_request_server_client(*protocol).release_value_but_fixme_should_propagate_errors();
-            request_server_socket = AK::move(socket);
-        }
+        // FIXME: Fail to open the tab, rather than crashing the whole application if this fails
+        auto request_server_socket = connect_new_request_server_client(*request_server_client).release_value_but_fixme_should_propagate_errors();
 
         auto candidate_web_content_paths = get_paths_for_helper_process("WebContent"sv).release_value_but_fixme_should_propagate_errors();
         auto new_client = launch_web_content_process(*this, candidate_web_content_paths, m_web_content_options, AK::move(request_server_socket)).release_value_but_fixme_should_propagate_errors();
@@ -802,8 +796,8 @@ bool WebContentView::event(QEvent* event)
 
 void WebContentView::enqueue_native_event(Web::MouseEvent::Type type, QSinglePointEvent const& event)
 {
-    Web::DevicePixelPoint position = { event.position().x() * m_device_pixel_ratio, event.position().y() * m_device_pixel_ratio };
-    auto screen_position = Gfx::IntPoint { event.globalPosition().x() * m_device_pixel_ratio, event.globalPosition().y() * m_device_pixel_ratio };
+    Web::DevicePixelPoint position = { event.position().x() * static_cast<double>(m_device_pixel_ratio), event.position().y() * static_cast<double>(m_device_pixel_ratio) };
+    auto screen_position = Gfx::IntPoint { event.globalPosition().x() * static_cast<double>(m_device_pixel_ratio), event.globalPosition().y() * static_cast<double>(m_device_pixel_ratio) };
 
     auto button = get_button_from_qt_mouse_button(event.button());
     auto buttons = get_buttons_from_qt_mouse_buttons(event.buttons());
@@ -852,10 +846,10 @@ struct DragData : Web::ChromeInputData {
 
 void WebContentView::enqueue_native_event(Web::DragEvent::Type type, QDropEvent const& event)
 {
-    Web::DevicePixelPoint position = { event.position().x() * m_device_pixel_ratio, event.position().y() * m_device_pixel_ratio };
+    Web::DevicePixelPoint position = { event.position().x() * static_cast<double>(m_device_pixel_ratio), event.position().y() * static_cast<double>(m_device_pixel_ratio) };
 
     auto global_position = mapToGlobal(event.position());
-    auto screen_position = Gfx::IntPoint { global_position.x() * m_device_pixel_ratio, global_position.y() * m_device_pixel_ratio };
+    auto screen_position = Gfx::IntPoint { global_position.x() * static_cast<double>(m_device_pixel_ratio), global_position.y() * static_cast<double>(m_device_pixel_ratio) };
 
     auto button = get_button_from_qt_mouse_button(Qt::LeftButton);
     auto buttons = get_buttons_from_qt_mouse_buttons(event.buttons());

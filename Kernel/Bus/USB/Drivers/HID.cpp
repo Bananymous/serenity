@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2025, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -91,7 +91,7 @@ USB_DEVICE_DRIVER(HIDDriver);
 void HIDDriver::init()
 {
     auto driver = MUST(adopt_nonnull_lock_ref_or_enomem(new (nothrow) HIDDriver()));
-    USBManagement::register_driver(driver);
+    MUST(USBManagement::register_driver(driver));
 }
 
 static constexpr u8 DESCRIPTOR_TYPE_HID = 0x21;
@@ -182,7 +182,7 @@ static ErrorOr<NonnullRefPtr<HIDInterface>> initialize_hid_interface(USB::Device
 
     ::HID::ReportDescriptorParser report_descriptor_parser { report_descriptor_buffer.span() };
     auto parsed_descriptor = TRY(report_descriptor_parser.parse());
-    return TRY(HIDInterface::create(device, parsed_descriptor, in_pipe.release_nonnull()));
+    return TRY(HIDInterface::create(device, move(parsed_descriptor), in_pipe.release_nonnull()));
 }
 
 ErrorOr<void> HIDDriver::probe(USB::Device& device)

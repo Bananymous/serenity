@@ -178,7 +178,7 @@ public:
 
     virtual void dump(int indent) const override;
     virtual Bytecode::CodeGenerationErrorOr<Optional<Bytecode::ScopedOperand>> generate_bytecode(Bytecode::Generator&, Optional<Bytecode::ScopedOperand> preferred_dst = {}) const override;
-    virtual Bytecode::CodeGenerationErrorOr<Optional<Bytecode::ScopedOperand>> generate_labelled_evaluation(Bytecode::Generator&, Vector<DeprecatedFlyString> const&, Optional<Bytecode::ScopedOperand> preferred_dst = {}) const;
+    Bytecode::CodeGenerationErrorOr<Optional<Bytecode::ScopedOperand>> generate_labelled_evaluation(Bytecode::Generator&, Vector<DeprecatedFlyString> const&, Optional<Bytecode::ScopedOperand> preferred_dst = {}) const;
 
     DeprecatedFlyString const& label() const { return m_label; }
     DeprecatedFlyString& label() { return m_label; }
@@ -720,7 +720,7 @@ public:
     virtual bool has_name() const = 0;
     virtual Value instantiate_ordinary_function_expression(VM&, DeprecatedFlyString given_name) const = 0;
 
-    virtual ~FunctionNode() {};
+    virtual ~FunctionNode() = default;
 
 protected:
     FunctionNode(RefPtr<Identifier const> name, ByteString source_text, NonnullRefPtr<Statement const> body, Vector<FunctionParameter> parameters, i32 function_length, FunctionKind kind, bool is_strict_mode, FunctionParsingInsights parsing_insights, bool is_arrow_function, Vector<DeprecatedFlyString> local_variables_names)
@@ -780,7 +780,7 @@ public:
     bool has_name() const override { return true; }
     Value instantiate_ordinary_function_expression(VM&, DeprecatedFlyString) const override { VERIFY_NOT_REACHED(); }
 
-    virtual ~FunctionDeclaration() {};
+    virtual ~FunctionDeclaration() = default;
 
 private:
     bool m_is_hoisted { false };
@@ -801,13 +801,13 @@ public:
     virtual void dump(int indent) const override;
 
     virtual Bytecode::CodeGenerationErrorOr<Optional<Bytecode::ScopedOperand>> generate_bytecode(Bytecode::Generator&, Optional<Bytecode::ScopedOperand> preferred_dst = {}) const override;
-    virtual Bytecode::CodeGenerationErrorOr<Optional<Bytecode::ScopedOperand>> generate_bytecode_with_lhs_name(Bytecode::Generator&, Optional<Bytecode::IdentifierTableIndex> lhs_name, Optional<Bytecode::ScopedOperand> preferred_dst = {}) const;
+    Bytecode::CodeGenerationErrorOr<Optional<Bytecode::ScopedOperand>> generate_bytecode_with_lhs_name(Bytecode::Generator&, Optional<Bytecode::IdentifierTableIndex> lhs_name, Optional<Bytecode::ScopedOperand> preferred_dst = {}) const;
 
     bool has_name() const override { return !name().is_empty(); }
 
     Value instantiate_ordinary_function_expression(VM&, DeprecatedFlyString given_name) const override;
 
-    virtual ~FunctionExpression() {};
+    virtual ~FunctionExpression() = default;
 
 private:
     virtual bool is_function_expression() const override { return true; }
@@ -1441,7 +1441,7 @@ public:
 
     virtual void dump(int indent) const override;
     virtual Bytecode::CodeGenerationErrorOr<Optional<Bytecode::ScopedOperand>> generate_bytecode(Bytecode::Generator&, Optional<Bytecode::ScopedOperand> preferred_dst = {}) const override;
-    virtual Bytecode::CodeGenerationErrorOr<Optional<Bytecode::ScopedOperand>> generate_bytecode_with_lhs_name(Bytecode::Generator&, Optional<Bytecode::IdentifierTableIndex> lhs_name, Optional<Bytecode::ScopedOperand> preferred_dst = {}) const;
+    Bytecode::CodeGenerationErrorOr<Optional<Bytecode::ScopedOperand>> generate_bytecode_with_lhs_name(Bytecode::Generator&, Optional<Bytecode::IdentifierTableIndex> lhs_name, Optional<Bytecode::ScopedOperand> preferred_dst = {}) const;
 
     bool has_name() const { return m_name; }
 
@@ -2131,7 +2131,7 @@ public:
 
     virtual void dump(int indent) const override;
     virtual Bytecode::CodeGenerationErrorOr<Optional<Bytecode::ScopedOperand>> generate_bytecode(Bytecode::Generator&, Optional<Bytecode::ScopedOperand> preferred_dst = {}) const override;
-    virtual Bytecode::CodeGenerationErrorOr<Optional<Bytecode::ScopedOperand>> generate_labelled_evaluation(Bytecode::Generator&, Vector<DeprecatedFlyString> const&, Optional<Bytecode::ScopedOperand> preferred_dst = {}) const;
+    Bytecode::CodeGenerationErrorOr<Optional<Bytecode::ScopedOperand>> generate_labelled_evaluation(Bytecode::Generator&, Vector<DeprecatedFlyString> const&, Optional<Bytecode::ScopedOperand> preferred_dst = {}) const;
 
     void add_case(NonnullRefPtr<SwitchCase const> switch_case) { m_cases.append(move(switch_case)); }
 

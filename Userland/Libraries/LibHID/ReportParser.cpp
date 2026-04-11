@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2025, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -27,6 +27,9 @@ ErrorOr<void> parse_input_report(ParsedReportDescriptor const& report_descriptor
     auto maybe_report = application_collection.input_reports.get(report_id);
     if (!maybe_report.has_value())
         return {};
+
+    if (report_data.size() * 8 < maybe_report->size_in_bits)
+        return Error::from_string_view_or_print_error_and_return_errno("Report is too small"sv, EINVAL);
 
     for (auto const& field : maybe_report->fields) {
         // 8.4 Report Constraints: An item field cannot span more than 4 bytes in a report. For example, a 32-bit item must start on a byte boundary to satisfy this condition.

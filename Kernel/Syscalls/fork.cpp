@@ -21,8 +21,7 @@ ErrorOr<FlatPtr> Process::sys$fork(RegisterState& regs)
     VERIFY_NO_PROCESS_BIG_LOCK(this);
     TRY(require_promise(Pledge::proc));
 
-    auto credentials = this->credentials();
-    auto child_and_first_thread = TRY(Process::create_with_forked_name(credentials->uid(), credentials->gid(), pid(), m_is_kernel_process, vfs_root_context(), hostname_context(), current_directory(), executable(), tty(), this));
+    auto child_and_first_thread = TRY(Process::create_from_fork(*this));
     auto& child = child_and_first_thread.process;
     auto& child_first_thread = child_and_first_thread.first_thread;
 
@@ -32,8 +31,9 @@ ErrorOr<FlatPtr> Process::sys$fork(RegisterState& regs)
         child_first_thread->set_state(Thread::State::Dying);
     };
 
-    // NOTE: All user processes have a leaked ref on them. It's balanced by Thread::WaitBlockerSet::finalize().
-    child->ref();
+    child->m_exec_vfs_root_context.copy_from(m_exec_vfs_root_context);
+    child->m_exec_scoped_process_list.copy_from(m_exec_scoped_process_list);
+    child->m_exec_hostname_context.copy_from(m_exec_hostname_context);
 
     TRY(m_unveil_data.with([&](auto& parent_unveil_data) -> ErrorOr<void> {
         return child->m_unveil_data.with([&](auto& child_unveil_data) -> ErrorOr<void> {
@@ -129,6 +129,8 @@ ErrorOr<FlatPtr> Process::sys$fork(RegisterState& regs)
 #    error Unknown architecture
 #endif
 
+    Processor::store_fpu_state(child_first_thread->fpu_state());
+
     TRY(address_space().with([&](auto& parent_space) {
         return child->address_space().with([&](auto& child_space) -> ErrorOr<void> {
             if (parent_space->enforces_syscall_regions())
@@ -155,9 +157,7 @@ ErrorOr<FlatPtr> Process::sys$fork(RegisterState& regs)
         }
     });
 
-    Process::register_new(*child);
-
-    PerformanceManager::add_process_created_event(*child);
+    commit_creation(child);
 
     SpinlockLocker lock(g_scheduler_lock);
     child_first_thread->set_affinity(Thread::current()->affinity());

@@ -56,7 +56,8 @@ ALWAYS_INLINE static f32x4 clamp(f32x4 v, f32x4 min, f32x4 max)
     return v < min ? min : (v > max ? max : v);
 }
 
-ALWAYS_INLINE static f32x4 clamp(f32x4 v, float min, float max)
+template<SIMDVector V, typename U = ElementOf<V>>
+ALWAYS_INLINE static V clamp(V v, U min, U max)
 {
     return v < min ? min : (v > max ? max : v);
 }
@@ -83,7 +84,9 @@ ALWAYS_INLINE static f32x4 exp_approximate(f32x4 v)
 
 ALWAYS_INLINE static f32x4 sqrt(f32x4 v)
 {
-#if ARCH(X86_64)
+#if __has_builtin(__builtin_elementwise_sqrt)
+    return __builtin_elementwise_sqrt(v);
+#elif __has_builtin(__builtin_ia32_sqrtps)
     return __builtin_ia32_sqrtps(v);
 #else
     return f32x4 {

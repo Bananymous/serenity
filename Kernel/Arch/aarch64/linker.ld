@@ -1,20 +1,23 @@
-ENTRY(start)
+ENTRY(init)
 
-KERNEL_MAPPING_BASE = 0x2000000000;
+ASSERT(CONSTANT(MAXPAGESIZE) == 4K, "The aarch64 Kernel linker script assumes a max page size of 4K");
 
-/* TODO: Add FLAGS to the program headers */
+#define PF_X 0x1
+#define PF_W 0x2
+#define PF_R 0x4
+
 PHDRS
 {
-    text PT_LOAD ;
-    data PT_LOAD ;
-    ksyms PT_LOAD ;
-    bss PT_LOAD ;
+    text PT_LOAD FLAGS(PF_R | PF_X);
+    data PT_LOAD FLAGS(PF_R | PF_W);
+    bss PT_LOAD FLAGS(PF_R | PF_W);
+    dynamic_segment PT_LOAD FLAGS(PF_R | PF_W);
+    dynamic PT_DYNAMIC FLAGS(PF_R | PF_W);
+    ksyms PT_LOAD FLAGS(PF_R | PF_W);
 }
 
 SECTIONS
 {
-    . = KERNEL_MAPPING_BASE;
-
     start_of_kernel_image = .;
 
     .text ALIGN(4K) : AT (ADDR(.text))
@@ -50,10 +53,6 @@ SECTIONS
 
     .rodata ALIGN(4K) : AT (ADDR(.rodata))
     {
-        start_heap_ctors = .;
-        *libkernel_heap.a:*(.init_array)
-        end_heap_ctors = .;
-
         start_ctors = .;
         *(.init_array)
         end_ctors = .;
@@ -75,13 +74,7 @@ SECTIONS
         end_of_ro_after_init = .;
     } :data
 
-    .ksyms ALIGN(4K) : AT (ADDR(.ksyms))
-    {
-        start_of_kernel_ksyms = .;
-        *(.kernel_symbols)
-        end_of_kernel_ksyms = .;
-    } :ksyms
-
+    /* bss has to be in its own program header so the prekernel doesn't have to copy segments */
     .bss ALIGN(4K) (NOLOAD) : AT (ADDR(.bss))
     {
         start_of_bss = .;
@@ -91,6 +84,18 @@ SECTIONS
         . = ALIGN(4K);
         *(.heap)
     } :bss
+
+    .dynamic ALIGN(4K) :
+    {
+        *(.dynamic)
+    } :dynamic_segment :dynamic
+
+    .ksyms ALIGN(4K) :
+    {
+        start_of_kernel_ksyms = .;
+        *(.kernel_symbols)
+        end_of_kernel_ksyms = .;
+    } :ksyms
 
     . = ALIGN(4K);
     start_of_initial_stack = .;

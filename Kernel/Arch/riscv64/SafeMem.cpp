@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2022, Timon Kruiper <timonkruiper@gmail.com>
  * Copyright (c) 2023, Daniel Bertalan <dani@danielbertalan.dev>
- * Copyright (c) 2024, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2024, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -162,9 +162,9 @@ safe_atomic_compare_exchange_relaxed_ins_2:
 .global safe_atomic_compare_exchange_relaxed_faulted
 safe_atomic_compare_exchange_relaxed_faulted:
 )"
-                 : [result] "=&r"(result), "+r"(error)
-                 : [var_ptr] "r"(var), [expected_ptr] "r"(&expected), [desired] "r"(desired)
-                 : "memory", "t0", "t1", "t2");
+        : [result] "=&r"(result), "+&r"(error)
+        : [var_ptr] "r"(var), [expected_ptr] "r"(&expected), [desired] "r"(desired)
+        : "memory", "t0", "t1", "t2");
     if (error != 0)
         return {};
     return static_cast<bool>(result);
@@ -182,9 +182,9 @@ safe_atomic_load_relaxed_ins:
 .global safe_atomic_load_relaxed_faulted
 safe_atomic_load_relaxed_faulted:
 )"
-                 : [result] "=r"(result), "+r"(error)
-                 : [var_ptr] "r"(var)
-                 : "memory");
+        : [result] "=r"(result), "+r"(error)
+        : [var_ptr] "r"(var)
+        : "memory");
     if (error != 0)
         return {};
     return result;
@@ -202,9 +202,9 @@ safe_atomic_fetch_add_relaxed_ins:
 .global safe_atomic_fetch_add_relaxed_faulted
 safe_atomic_fetch_add_relaxed_faulted:
 )"
-                 : [result] "=r"(result), "+r"(error)
-                 : [val] "r"(val), [var_ptr] "r"(var)
-                 : "memory");
+        : [result] "=r"(result), "+r"(error)
+        : [val] "r"(val), [var_ptr] "r"(var)
+        : "memory");
     if (error != 0)
         return {};
     return result;
@@ -222,9 +222,9 @@ safe_atomic_exchange_relaxed_ins:
 .global safe_atomic_exchange_relaxed_faulted
 safe_atomic_exchange_relaxed_faulted:
 )"
-                 : [result] "=r"(result), "+r"(error)
-                 : [desired] "r"(desired), [var_ptr] "r"(var)
-                 : "memory");
+        : [result] "=r"(result), "+r"(error)
+        : [desired] "r"(desired), [var_ptr] "r"(var)
+        : "memory");
     if (error != 0)
         return {};
     return result;
@@ -241,9 +241,9 @@ safe_atomic_store_relaxed_ins:
 .global safe_atomic_store_relaxed_faulted
 safe_atomic_store_relaxed_faulted:
 )"
-                 : "+r"(error)
-                 : [desired] "r"(desired), [var_ptr] "r"(var)
-                 : "memory");
+        : "+r"(error)
+        : [desired] "r"(desired), [var_ptr] "r"(var)
+        : "memory");
     return error == 0;
 }
 

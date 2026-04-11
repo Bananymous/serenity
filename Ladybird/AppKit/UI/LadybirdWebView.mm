@@ -1518,7 +1518,6 @@ static void copy_data_to_clipboard(StringView data, NSPasteboardType pasteboard_
 
     static constexpr size_t BITS_PER_COMPONENT = 8;
     static constexpr size_t BITS_PER_PIXEL = 32;
-    static constexpr size_t COMPONENTS_PER_PIXEL = 4;
 
     auto* context = [[NSGraphicsContext currentContext] CGContext];
     CGContextSaveGState(context);
@@ -1531,6 +1530,8 @@ static void copy_data_to_clipboard(StringView data, NSPasteboardType pasteboard_
     auto* provider = CGDataProviderCreateWithData(nil, bitmap.scanline_u8(0), bitmap.size_in_bytes(), nil);
     auto image_rect = CGRectMake(rect.origin.x * device_pixel_ratio, rect.origin.y * device_pixel_ratio, bitmap_size.width(), bitmap_size.height());
 
+    static auto color_space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+
     // Ideally, this would be NSBitmapImageRep, but the equivalent factory initWithBitmapDataPlanes: does
     // not seem to actually respect endianness. We need NSBitmapFormatThirtyTwoBitLittleEndian, but the
     // resulting image is always big endian. CGImageCreate actually does respect the endianness.
@@ -1539,9 +1540,9 @@ static void copy_data_to_clipboard(StringView data, NSPasteboardType pasteboard_
         bitmap_size.height(),
         BITS_PER_COMPONENT,
         BITS_PER_PIXEL,
-        COMPONENTS_PER_PIXEL * bitmap.width(),
-        CGColorSpaceCreateDeviceRGB(),
-        kCGBitmapByteOrder32Little | kCGImageAlphaFirst,
+        bitmap.pitch(),
+        color_space,
+        (CGBitmapInfo)(kCGBitmapByteOrder32Little | (CGBitmapInfo)kCGImageAlphaFirst),
         provider,
         nil,
         NO,

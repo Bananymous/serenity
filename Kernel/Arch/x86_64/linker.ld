@@ -1,5 +1,7 @@
 ENTRY(init)
 
+ASSERT(CONSTANT(MAXPAGESIZE) == 4K, "The x86_64 Kernel linker script assumes a max page size of 4K");
+
 #define PF_X 0x1
 #define PF_W 0x2
 #define PF_R 0x4
@@ -56,11 +58,6 @@ SECTIONS
 
     .rodata ALIGN(4K) : AT (ADDR(.rodata))
     {
-        start_heap_ctors = .;
-        *libkernel_heap.a:*(.ctors)
-        *libkernel_heap.a:*(.init_array)
-        end_heap_ctors = .;
-
         start_ctors = .;
         *(.ctors)
         *(.init_array)

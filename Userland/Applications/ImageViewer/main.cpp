@@ -32,7 +32,6 @@
 #include <LibGfx/Rect.h>
 #include <LibMain/Main.h>
 #include <LibURL/URL.h>
-#include <serenity.h>
 #include <string.h>
 
 using namespace ImageViewer;
@@ -65,7 +64,6 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.parse(arguments);
 
     auto window = GUI::Window::construct();
-    window->set_double_buffering_enabled(true);
     window->resize(300, 200);
     window->set_icon(app_icon.bitmap_for_size(16));
     window->set_title("Image Viewer");

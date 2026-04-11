@@ -28,7 +28,7 @@ First, make sure you have a working toolchain and can build and run SerenityOS. 
 
     If you're working on the Kernel, just uncomment `#define KERNEL`.
 
--   Edit the `serenity.cxxflags` file to say `-std=c++23 -fsigned-char -fconcepts -fno-exceptions -fno-semantic-interposition -fPIC`
+-   Edit the `serenity.cxxflags` file to say `-std=c++26 -fconcepts -fno-exceptions -fno-semantic-interposition -fPIC`
 -   Edit the `serenity.includes` file to list the following lines:
     ```
     ./
@@ -37,7 +37,7 @@ First, make sure you have a working toolchain and can build and run SerenityOS. 
     Userland/Libraries/LibC/
     Userland/Libraries/LibSystem/
     Userland/Services/
-    Toolchain/Local/x86_64/x86_64-pc-serenity/include/c++/13.1.0
+    Toolchain/Local/x86_64/x86_64-serenity/include/c++/13.1.0
     Build/x86_64/
     Build/x86_64/Userland/
     Build/x86_64/Userland/Libraries/
@@ -51,7 +51,7 @@ Qt Creator should be set up correctly now, go ahead and explore the project and 
 
 ## Auto-Formatting
 
-You can use `clang-format` to help you with the [style guide](CodingStyle.md). Before you proceed, check that you're actually using clang-format version 18, as some OSes will ship older clang-format versions by default.
+You can use `clang-format` to help you with the [style guide](CodingStyle.md). Before you proceed, check that you're actually using clang-format version 20, as some OSes will ship older clang-format versions by default.
 
 -   In QtCreator, go to "Help > About Plugins…"
 -   Find the `Beautifier (experimental)` row (for example, by typing `beau` into the search)
@@ -100,4 +100,4 @@ option "License template:". Click "Browse…", select your file (i.e.,
 ## Compiler Kits
 
 You can slightly improve how well Qt interprets the code by adding and setting up an appropriate "compiler kit".
-For that you will need to reference the compilers at `Toolchain/Local/x86_64/bin/x86_64-pc-serenity-gcc` and `Toolchain/Local/x86_64/bin/x86_64-pc-serenity-g++`.
+For that you will need to reference the compilers at `Toolchain/Local/x86_64/bin/x86_64-serenity-gcc` and `Toolchain/Local/x86_64/bin/x86_64-serenity-g++`.

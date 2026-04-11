@@ -29,7 +29,7 @@ ErrorOr<size_t> FUSEInode::read_bytes_locked(off_t offset, size_t size, UserOrKe
 
     constexpr size_t max_read_size = 0x21000 - sizeof(fuse_in_header) - sizeof(fuse_read_in);
     u64 id = TRY(try_open(false, O_RDONLY));
-    u32 nodeid = identifier().index().value();
+    u64 nodeid = identifier().index().value();
 
     size_t nread = 0;
     size_t target_size = size;
@@ -70,7 +70,7 @@ ErrorOr<size_t> FUSEInode::write_bytes_locked(off_t offset, size_t size, UserOrK
 
     constexpr size_t max_write_size = 0x21000 - sizeof(fuse_in_header) - sizeof(fuse_write_in);
     u64 id = TRY(try_open(false, O_WRONLY));
-    u32 nodeid = identifier().index().value();
+    u64 nodeid = identifier().index().value();
 
     size_t nwritten = 0;
     while (size) {
@@ -106,7 +106,7 @@ InodeMetadata FUSEInode::metadata() const
 {
     InodeMetadata metadata;
     metadata.inode = identifier();
-    u32 id = identifier().index().value();
+    u64 id = identifier().index().value();
 
     fuse_getattr_in payload {};
 
@@ -141,7 +141,7 @@ InodeMetadata FUSEInode::metadata() const
 
 ErrorOr<u64> FUSEInode::try_open(bool directory, u32 flags) const
 {
-    u32 id = identifier().index().value();
+    u64 id = identifier().index().value();
 
     fuse_open_in payload {};
     payload.flags = flags;
@@ -161,7 +161,7 @@ ErrorOr<u64> FUSEInode::try_open(bool directory, u32 flags) const
 
 ErrorOr<void> FUSEInode::try_flush(u64 id) const
 {
-    u32 nodeid = identifier().index().value();
+    u64 nodeid = identifier().index().value();
 
     fuse_flush_in payload {};
     payload.fh = id;
@@ -172,7 +172,7 @@ ErrorOr<void> FUSEInode::try_flush(u64 id) const
 
 ErrorOr<void> FUSEInode::try_release(u64 id, bool directory) const
 {
-    u32 nodeid = identifier().index().value();
+    u64 nodeid = identifier().index().value();
 
     fuse_release_in payload {};
     payload.fh = id;
@@ -195,7 +195,7 @@ static size_t get_dirent_entry_length_padded(size_t name_length)
 ErrorOr<void> FUSEInode::traverse_as_directory(Function<ErrorOr<void>(FileSystem::DirectoryEntryView const&)> callback) const
 {
     u64 id = TRY(try_open(true, 0));
-    u32 nodeid = identifier().index().value();
+    u64 nodeid = identifier().index().value();
 
     fuse_read_in payload {};
     payload.fh = id;
@@ -250,29 +250,120 @@ ErrorOr<void> FUSEInode::flush_metadata()
     return {};
 }
 
-ErrorOr<void> FUSEInode::add_child(Inode&, StringView, mode_t)
+ErrorOr<void> FUSEInode::add_child(Inode& inode, StringView name, mode_t mode)
 {
-    return ENOTIMPL;
+    dev_t rdev = encoded_device(inode.metadata().major_device, inode.metadata().minor_device);
+    (void)TRY(create_child(name, mode, rdev, {}, {}));
+    return {};
 }
 
-ErrorOr<NonnullRefPtr<Inode>> FUSEInode::create_child(StringView, mode_t, dev_t, UserID, GroupID)
+ErrorOr<NonnullRefPtr<Inode>> FUSEInode::create_child(StringView name, mode_t mode, dev_t rdev, UserID, GroupID)
 {
-    return ENOTIMPL;
+    u64 id = identifier().index().value();
+
+    size_t name_offset = Kernel::is_directory(mode) ? offsetof(fuse_mkdir_in, data) : offsetof(fuse_mknod_in, data);
+    auto payload = TRY(KBuffer::try_create_with_size("FUSE: Create child buffer"sv, name_offset + name.length() + 1));
+    memset(payload->data(), 0, payload->size());
+
+    if (Kernel::is_directory(mode)) {
+        fuse_mkdir_in* request = bit_cast<fuse_mkdir_in*>(payload->data());
+
+        request->mode = mode;
+        request->umask = 022; // TODO: Honor any mount flags that should override this.
+        memcpy(request->data, name.characters_without_null_termination(), name.length());
+    } else {
+        fuse_mknod_in* request = bit_cast<fuse_mknod_in*>(payload->data());
+
+        request->mode = mode;
+        request->rdev = rdev;
+        request->umask = 022; // TODO: Honor any mount flags that should override this.
+        memcpy(request->data, name.characters_without_null_termination(), name.length());
+    }
+
+    OwnPtr<KBuffer> response = nullptr;
+    if (Kernel::is_directory(mode))
+        response = TRY(fs().m_connection->send_request_and_wait_for_a_reply(FUSEOpcode::FUSE_MKDIR, id, payload->bytes()));
+    else
+        response = TRY(fs().m_connection->send_request_and_wait_for_a_reply(FUSEOpcode::FUSE_MKNOD, id, payload->bytes()));
+
+    fuse_out_header* header = bit_cast<fuse_out_header*>(response->data());
+    if (header->error)
+        return Error::from_errno(-header->error);
+
+    if (response->size() < sizeof(fuse_out_header) + sizeof(fuse_entry_out)) {
+        if (Kernel::is_directory(mode))
+            dmesgln("FUSE: Received an invalid response for FUSE_MKDIR");
+        else
+            dmesgln("FUSE: Received an invalid response for FUSE_MKNOD");
+
+        return Error::from_errno(EINVAL);
+    }
+
+    fuse_entry_out* entry = bit_cast<fuse_entry_out*>(response->data() + sizeof(fuse_out_header));
+
+    return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) FUSEInode(fs(), entry->nodeid)));
 }
 
-ErrorOr<void> FUSEInode::remove_child(StringView)
+ErrorOr<void> FUSEInode::remove_child(StringView name)
 {
-    return ENOTIMPL;
+    auto name_buffer = TRY(KBuffer::try_create_with_size("FUSE: Remove child name string"sv, name.length() + 1));
+    memset(name_buffer->data(), 0, name_buffer->size());
+    memcpy(name_buffer->data(), name.characters_without_null_termination(), name.length());
+
+    MutexLocker locker(m_inode_lock);
+
+    auto inode = TRY(lookup(name));
+
+    OwnPtr<KBuffer> response = nullptr;
+    if (inode->metadata().is_directory())
+        response = TRY(fs().m_connection->send_request_and_wait_for_a_reply(FUSEOpcode::FUSE_RMDIR, identifier().index().value(), name_buffer->bytes()));
+    else
+        response = TRY(fs().m_connection->send_request_and_wait_for_a_reply(FUSEOpcode::FUSE_UNLINK, identifier().index().value(), name_buffer->bytes()));
+
+    fuse_out_header* header = bit_cast<fuse_out_header*>(response->data());
+    if (header->error)
+        return Error::from_errno(-header->error);
+
+    return {};
 }
 
-ErrorOr<void> FUSEInode::chmod(mode_t)
+ErrorOr<void> FUSEInode::chmod(mode_t mode)
 {
-    return ENOTIMPL;
+    MutexLocker locker(m_inode_lock);
+    u64 id = TRY(try_open(is_directory(), 0));
+
+    fuse_setattr_in setattr {};
+    setattr.fh = id;
+    setattr.valid = FATTR_MODE;
+    setattr.mode = mode;
+
+    auto response = TRY(fs().m_connection->send_request_and_wait_for_a_reply(FUSEOpcode::FUSE_SETATTR, identifier().index().value(), { &setattr, sizeof(setattr) }));
+
+    fuse_out_header* header = bit_cast<fuse_out_header*>(response->data());
+    if (header->error)
+        return Error::from_errno(-header->error);
+
+    return try_release(id, is_directory());
 }
 
-ErrorOr<void> FUSEInode::chown(UserID, GroupID)
+ErrorOr<void> FUSEInode::chown(UserID uid, GroupID gid)
 {
-    return ENOTIMPL;
+    MutexLocker locker(m_inode_lock);
+    u64 id = TRY(try_open(is_directory(), 0));
+
+    fuse_setattr_in setattr {};
+    setattr.fh = id;
+    setattr.valid = FATTR_UID | FATTR_GID;
+    setattr.uid = static_cast<u32>(uid.value());
+    setattr.gid = static_cast<u32>(gid.value());
+
+    auto response = TRY(fs().m_connection->send_request_and_wait_for_a_reply(FUSEOpcode::FUSE_SETATTR, identifier().index().value(), { &setattr, sizeof(setattr) }));
+
+    fuse_out_header* header = bit_cast<fuse_out_header*>(response->data());
+    if (header->error)
+        return Error::from_errno(-header->error);
+
+    return try_release(id, is_directory());
 }
 
 ErrorOr<void> FUSEInode::truncate_locked(u64 new_size)

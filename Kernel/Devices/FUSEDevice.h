@@ -10,17 +10,9 @@
 #include <Kernel/Devices/CharacterDevice.h>
 #include <Kernel/Locking/Mutex.h>
 #include <Kernel/Locking/SpinlockProtected.h>
+#include <Kernel/Tasks/WaitQueue.h>
 
 namespace Kernel {
-
-struct FUSEInstance {
-    OpenFileDescription const* fd = nullptr;
-    NonnullOwnPtr<KBuffer> pending_request;
-    NonnullOwnPtr<KBuffer> response;
-    bool buffer_ready = false;
-    bool response_ready = false;
-    bool expecting_header = true;
-};
 
 class FUSEDevice final : public CharacterDevice {
     friend class Device;
@@ -46,8 +38,25 @@ private:
     virtual bool can_write(OpenFileDescription const&, u64) const override;
     virtual StringView class_name() const override { return "FUSEDevice"sv; }
 
-    SpinlockProtected<HashMap<OpenFileDescription const*, Vector<FUSEInstance>>, LockRank::None> m_instances;
-    SpinlockProtected<Vector<OpenFileDescription const*>, LockRank::None> m_closing_instances;
+    struct FUSEInstance {
+        OpenFileDescription const* fd = nullptr;
+        NonnullOwnPtr<KBuffer> pending_request;
+        NonnullOwnPtr<KBuffer> response;
+        bool buffer_ready = false;
+        bool timed_out = false;
+        bool response_ready = false;
+        bool expecting_header = true;
+    };
+
+    struct InstanceTracker {
+        HashMap<OpenFileDescription const*, Vector<FUSEInstance>> active_instances;
+        Vector<OpenFileDescription const*> closing_instances;
+    };
+
+    ErrorOr<void> queue_request(OpenFileDescription const& description, Bytes bytes, InstanceTracker& instances);
+
+    WaitQueue instance_queue {};
+    SpinlockProtected<InstanceTracker, LockRank::None> m_instances;
 };
 
 }

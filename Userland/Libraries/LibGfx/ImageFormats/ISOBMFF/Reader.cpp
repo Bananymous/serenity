@@ -42,13 +42,15 @@ ErrorOr<BoxList> Reader::read_entire_file()
             return TRY(JPEGXLLevelBox::create_from_stream(stream));
         case BoxType::JPEGXLSignatureBox:
             return TRY(JPEGXLSignatureBox::create_from_stream(stream));
+        case BoxType::JPEGXLPartialCodestreamBox:
+            return TRY(JPEGXLPartialCodestreamBox::create_from_stream(stream));
         case BoxType::UserExtensionBox:
             return TRY(UserExtensionBox::create_from_stream(stream));
         default:
             return OptionalNone {};
         }
     };
-    return read_entire_file((ErrorOr<Optional<NonnullOwnPtr<Box>>>(*)(BoxType, ConstrainedStream&))(make_top_level_box));
+    return read_entire_file((ErrorOr<Optional<NonnullOwnPtr<Box>>> (*)(BoxType, ConstrainedStream&))(make_top_level_box));
 }
 
 ErrorOr<BoxList> Reader::read_entire_file(BoxCallback box_factory)

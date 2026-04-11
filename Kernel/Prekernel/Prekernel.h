@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2021, Gunnar Beutner <gbeutner@serenityos.org>
- * Copyright (c) 2024, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2024, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -41,8 +41,6 @@ struct Multiboot1BootInfo {
 
     PhysicalAddress start_of_prekernel_image { 0 };
     PhysicalAddress end_of_prekernel_image { 0 };
-
-    PhysicalAddress boot_pd0 { 0 };
 };
 
 struct PreInitBootInfo {

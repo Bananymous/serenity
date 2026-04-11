@@ -9,6 +9,7 @@
 #include "JPEGWriterTables.h"
 #include <AK/BitStream.h>
 #include <AK/Endian.h>
+#include <AK/Enumerate.h>
 #include <AK/Function.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/CMYKBitmap.h>
@@ -17,7 +18,7 @@ namespace Gfx {
 
 namespace {
 
-enum Mode {
+enum class Mode {
     RGB,
     CMYK,
 };
@@ -42,7 +43,7 @@ public:
         return m_stream.write_some(bytes);
     }
 
-    template<Unsigned T>
+    template<UnsignedIntegral T>
     ErrorOr<void> write_bits(T value, size_t bit_count)
     {
         VERIFY(m_bit_offset <= 7);
@@ -98,6 +99,40 @@ private:
     size_t m_bit_offset { 0 };
 };
 
+void interpolate(f32* component, f32 max_value, i8 start, i8 stop)
+{
+    // We're creating a uniform (ɑ = 1) Catmull–Rom curve for the missing points.
+    // That means that tᵢ₊₁ = tᵢ + 1.
+    // Note that component[start] should be interpolated but component[stop] should not.
+
+    // p1 and p2 are set to the ceil value.
+    // p0 is set to the last non-max value if possible, otherwise the value of p3 for symmetry.
+    // The same logic is applied to p3.
+    f32 const p0 = start == 0 ? component[zigzag_map[stop]] : component[zigzag_map[start - 1]];
+    f32 const p1 = max_value;
+    f32 const p2 = max_value;
+    f32 const p3 = stop > 63 ? p0 : component[zigzag_map[stop]];
+
+    f32 const t0 = 0.0f;
+    f32 const t1 = 1;
+    f32 const t2 = 2;
+    f32 const t3 = 3;
+
+    f32 const step = 1. / (stop - start + 1);
+    f32 t = t1;
+    for (i8 i = start; i < stop; ++i) {
+        t += step;
+        f32 const A1 = p0 * (t1 - t) / (t1 - t0) + p1 * (t - t0) / (t1 - t0);
+        f32 const A2 = p1 * (t2 - t) / (t2 - t1) + p2 * (t - t1) / (t2 - t1);
+        f32 const A3 = p2 * (t3 - t) / (t3 - t2) + p3 * (t - t2) / (t3 - t2);
+        f32 const B1 = A1 * (t2 - t) / (t2 - t0) + A2 * (t - t0) / (t2 - t0);
+        f32 const B2 = A2 * (t3 - t) / (t3 - t1) + A3 * (t - t1) / (t3 - t1);
+        f32 const C = B1 * (t2 - t) / (t2 - t1) + B2 * (t - t1) / (t2 - t1);
+
+        component[zigzag_map[i]] = C;
+    }
+}
+
 class JPEGEncodingContext {
 public:
     JPEGEncodingContext(JPEGBigEndianOutputBitStream output_stream)
@@ -123,18 +158,9 @@ public:
                 auto const pixel_offset = vertical_pixel_offset * 8 + horizontal_pixel_offset;
 
                 auto const original_pixel = bitmap.get_pixel(x, y);
-
-                // Conversion from YCbCr to RGB isn't specified in the first JPEG specification but in the JFIF extension:
-                // See: https://www.itu.int/rec/dologin_pub.asp?lang=f&id=T-REC-T.871-201105-I!!PDF-E&type=items
-                // 7 - Conversion to and from RGB
-                auto const y_ = clamp(0.299 * original_pixel.red() + 0.587 * original_pixel.green() + 0.114 * original_pixel.blue(), 0, 255);
-                auto const cb = clamp(-0.1687 * original_pixel.red() - 0.3313 * original_pixel.green() + 0.5 * original_pixel.blue() + 128, 0, 255);
-                auto const cr = clamp(0.5 * original_pixel.red() - 0.4187 * original_pixel.green() - 0.0813 * original_pixel.blue() + 128, 0, 255);
-
-                // A.3.1 - Level shift
-                macroblock.r[pixel_offset] = y_ - 128;
-                macroblock.g[pixel_offset] = cb - 128;
-                macroblock.b[pixel_offset] = cr - 128;
+                macroblock.r[pixel_offset] = original_pixel.red();
+                macroblock.g[pixel_offset] = original_pixel.green();
+                macroblock.b[pixel_offset] = original_pixel.blue();
             }
         }
 
@@ -160,37 +186,21 @@ public:
 
                 auto const original_pixel = bitmap.scanline(y)[x];
 
-                // To get YCCK, the CMY part is converted to RGB (ignoring the K component), and then the RGB is converted to YCbCr.
-                // r is `255 - c` (and similar for g/m b/y), but with the Adobe YCCK color transform marker, the CMY
-                // channels are stored inverted, which cancels out: 255 - (255 - x) == x.
-                // K is stored as-is (meaning it's inverted once for the color transform).
-                u8 r = original_pixel.c;
-                u8 g = original_pixel.m;
-                u8 b = original_pixel.y;
-                u8 k = 255 - original_pixel.k;
-
-                // See: https://www.itu.int/rec/dologin_pub.asp?lang=f&id=T-REC-T.871-201105-I!!PDF-E&type=items
-                // 7 - Conversion to and from RGB
-                auto const y_ = clamp(0.299 * r + 0.587 * g + 0.114 * b, 0, 255);
-                auto const cb = clamp(-0.1687 * r - 0.3313 * g + 0.5 * b + 128, 0, 255);
-                auto const cr = clamp(0.5 * r - 0.4187 * g - 0.0813 * b + 128, 0, 255);
-
-                // A.3.1 - Level shift
-                macroblock.r[pixel_offset] = y_ - 128;
-                macroblock.g[pixel_offset] = cb - 128;
-                macroblock.b[pixel_offset] = cr - 128;
-                macroblock.k[pixel_offset] = k - 128;
+                macroblock.r[pixel_offset] = original_pixel.c;
+                macroblock.g[pixel_offset] = original_pixel.m;
+                macroblock.b[pixel_offset] = original_pixel.y;
+                macroblock.k[pixel_offset] = original_pixel.k;
             }
         }
 
         return {};
     }
 
-    static Array<double, 64> create_cosine_lookup_table()
+    static Array<f32, 64> create_cosine_lookup_table()
     {
-        static constexpr double pi_over_16 = AK::Pi<double> / 16;
+        static constexpr f32 pi_over_16 = AK::Pi<f32> / 16;
 
-        Array<double, 64> table;
+        Array<f32, 64> table;
 
         for (u8 u = 0; u < 8; ++u) {
             for (u8 x = 0; x < 8; ++x)
@@ -200,6 +210,39 @@ public:
         return table;
     }
 
+    void convert_to_ycbcr(Mode mode)
+    {
+        for (auto& macroblock : m_macroblocks) {
+            for (u8 i = 0; i < 64; ++i) {
+                auto r = macroblock.r[i];
+                auto g = macroblock.g[i];
+                auto b = macroblock.b[i];
+
+                // Conversion from YCbCr to RGB isn't specified in the first JPEG specification but in the JFIF extension:
+                // See: https://www.itu.int/rec/dologin_pub.asp?lang=f&id=T-REC-T.871-201105-I!!PDF-E&type=items
+                // 7 - Conversion to and from RGB
+                auto const y_ = 0.299f * r + 0.587f * g + 0.114f * b;
+                auto const cb = -0.1687f * r - 0.3313f * g + 0.5f * b + 128;
+                auto const cr = 0.5f * r - 0.4187f * g - 0.0813f * b + 128;
+
+                // A.3.1 - Level shift
+                macroblock.y[i] = y_ - 128;
+                macroblock.cb[i] = cb - 128;
+                macroblock.cr[i] = cr - 128;
+
+                if (mode == Mode::CMYK) {
+                    // To get YCCK, the CMY part is converted to RGB (ignoring the K component), and then the RGB is converted to YCbCr.
+                    // r is `255 - c` (and similar for g/m b/y), but with the Adobe YCCK color transform marker, the CMY
+                    // channels are stored inverted, which cancels out: 255 - (255 - x) == x.
+                    // K is stored as-is (meaning it's inverted once for the color transform).
+                    macroblock.k[i] = 255 - macroblock.k[i];
+                    // A.3.1 - Level shift
+                    macroblock.k[i] -= 128;
+                }
+            }
+        }
+    }
+
     void fdct_and_quantization(Mode mode)
     {
         static auto cosine_table = create_cosine_lookup_table();
@@ -207,11 +250,11 @@ public:
         for (auto& macroblock : m_macroblocks) {
             constexpr double inverse_sqrt_2 = M_SQRT1_2;
 
-            auto const convert_one_component = [&](i16 component[], QuantizationTable const& table) {
-                Array<i16, 64> result {};
+            auto const convert_one_component = [&](f32 component[], QuantizationTable const& table) {
+                Array<f32, 64> result {};
 
                 auto const sum_xy = [&](u8 u, u8 v) {
-                    double sum {};
+                    f32 sum {};
                     for (u8 y {}; y < 8; ++y) {
                         for (u8 x {}; x < 8; ++x)
                             sum += component[y * 8 + x] * cosine_table[u * 8 + x] * cosine_table[v * 8 + y];
@@ -220,17 +263,17 @@ public:
                 };
 
                 for (u8 v {}; v < 8; ++v) {
-                    double const cv = v == 0 ? inverse_sqrt_2 : 1;
+                    f32 const cv = v == 0 ? inverse_sqrt_2 : 1;
                     for (u8 u {}; u < 8; ++u) {
                         auto const table_index = v * 8 + u;
 
-                        double const cu = u == 0 ? inverse_sqrt_2 : 1;
+                        f32 const cu = u == 0 ? inverse_sqrt_2 : 1;
 
                         // A.3.3 - FDCT and IDCT
-                        double const fdct = cu * cv * sum_xy(u, v) / 4;
+                        f32 const fdct = cu * cv * sum_xy(u, v) / 4;
 
                         // A.3.4 - DCT coefficient quantization
-                        i16 const quantized = round(fdct / table.table[table_index]);
+                        f32 const quantized = fdct / table.table[table_index];
 
                         result[table_index] = quantized;
                     }
@@ -248,37 +291,64 @@ public:
         }
     }
 
-    ErrorOr<void> write_huffman_stream(Mode mode)
+    void apply_deringing()
     {
+        // The method used here is described at: https://kornel.ski/deringing/.
+
         for (auto& macroblock : m_macroblocks) {
-            TRY(encode_dc(dc_luminance_huffman_table, macroblock.y, 0));
-            TRY(encode_ac(ac_luminance_huffman_table, macroblock.y));
+            for (auto component : { macroblock.r, macroblock.g, macroblock.b }) {
+                static constexpr auto maximum_value = NumericLimits<u8>::max();
+                Optional<u8> start;
+                u8 i = 0;
+                for (; i < 64; ++i) {
+                    if (component[zigzag_map[i]] == maximum_value) {
+                        if (!start.has_value())
+                            start = i;
+                        else
+                            continue;
+                    } else {
+                        if (start.has_value() && i - *start > 2) {
+                            interpolate(component, maximum_value, *start, i);
+                        }
+                        start.clear();
+                    }
+                }
 
-            TRY(encode_dc(dc_chrominance_huffman_table, macroblock.cb, 1));
-            TRY(encode_ac(ac_chrominance_huffman_table, macroblock.cb));
-
-            TRY(encode_dc(dc_chrominance_huffman_table, macroblock.cr, 2));
-            TRY(encode_ac(ac_chrominance_huffman_table, macroblock.cr));
-
-            if (mode == Mode::CMYK) {
-                TRY(encode_dc(dc_luminance_huffman_table, macroblock.k, 3));
-                TRY(encode_ac(ac_luminance_huffman_table, macroblock.k));
+                if (start != 0 && component[zigzag_map[63]] == maximum_value)
+                    interpolate(component, maximum_value, *start, 64);
             }
         }
+    }
 
-        TRY(m_bit_stream.align_to_byte_boundary(0xFF));
+    ErrorOr<void> huffman_encode_macroblocks(Mode mode)
+    {
+        for (auto& float_macroblock : m_macroblocks) {
+            auto macroblock = float_macroblock.as_i16();
 
+            for (auto [i, component] : enumerate(to_array({ macroblock.y, macroblock.cb, macroblock.cr, macroblock.k }))) {
+                if (mode == Mode::CMYK || i < 3) {
+                    TRY(encode_dc(component, i));
+                    TRY(encode_ac(component, i));
+                }
+            }
+        }
+        m_macroblocks.clear();
+
+        TRY(find_optimal_huffman_tables());
         return {};
     }
 
-    void set_luminance_quantization_table(QuantizationTable const& table, int quality)
+    ErrorOr<void> write_huffman_stream()
     {
-        set_quantization_table(m_luminance_quantization_table, table, quality);
+        TRY(write_symbols_to_stream());
+        TRY(m_bit_stream.align_to_byte_boundary(0xFF));
+        return {};
     }
 
-    void set_chrominance_quantization_table(QuantizationTable const& table, int quality)
+    void set_quantization_tables(int quality)
     {
-        set_quantization_table(m_chrominance_quantization_table, table, quality);
+        set_quantization_table(m_luminance_quantization_table, s_default_luminance_quantization_table, quality);
+        set_quantization_table(m_chrominance_quantization_table, s_default_chrominance_quantization_table, quality);
     }
 
     QuantizationTable const& luminance_quantization_table() const
@@ -298,6 +368,17 @@ public:
     OutputHuffmanTable ac_chrominance_huffman_table;
 
 private:
+    struct RawBits {
+        u16 bits {};
+        u8 length {};
+    };
+    struct Symbol {
+        u8 byte {};
+        u8 component_id {};
+        bool is_dc {};
+    };
+    using SymbolOrRawBits = Variant<Symbol, RawBits>;
+
     static void set_quantization_table(QuantizationTable& destination, QuantizationTable const& source, int quality)
     {
         // In order to be compatible with libjpeg-turbo, we use the same coefficients as them.
@@ -321,62 +402,274 @@ private:
         return m_bit_stream.write_bits(symbol.word, symbol.code_length);
     }
 
-    ErrorOr<void> encode_dc(OutputHuffmanTable const& dc_table, i16 const component[], u8 component_id)
+    ErrorOr<void> append_symbol(Symbol symbol)
+    {
+        auto& stat_table = [&]() -> auto& {
+            if (symbol.component_id == 0 || symbol.component_id == 3) {
+                return symbol.is_dc ? m_symbol_stats[0] : m_symbol_stats[1];
+            }
+            return symbol.is_dc ? m_symbol_stats[2] : m_symbol_stats[3];
+        }();
+        stat_table[symbol.byte] += 1;
+        TRY(m_symbols_and_bits.try_append(symbol));
+        return {};
+    }
+
+    ErrorOr<void> encode_dc(i16 const component[], u8 component_id)
     {
         // F.1.2.1.3 - Huffman encoding procedures for DC coefficients
         auto diff = component[0] - m_last_dc_values[component_id];
         m_last_dc_values[component_id] = component[0];
 
         auto const size = csize(diff);
-        TRY(write_symbol(dc_table.from_input_byte(size)));
+        TRY(append_symbol({ .byte = size, .component_id = component_id, .is_dc = true }));
 
         if (diff < 0)
             diff -= 1;
 
-        TRY(m_bit_stream.write_bits<u16>(diff, size));
+        TRY(m_symbols_and_bits.try_append(RawBits(diff, size)));
         return {};
     }
 
-    ErrorOr<void> encode_ac(OutputHuffmanTable const& ac_table, i16 const component[])
+    ErrorOr<void> encode_ac(i16 const component[], u8 component_id)
     {
-        {
-            // F.2 - Procedure for sequential encoding of AC coefficients with Huffman coding
-            u32 k {};
-            u32 r {};
+        // F.2 - Procedure for sequential encoding of AC coefficients with Huffman coding
+        u32 k {};
+        u32 r {};
 
-            while (k < 63) {
-                k++;
+        while (k < 63) {
+            k++;
 
-                auto coefficient = component[zigzag_map[k]];
-                if (coefficient == 0) {
-                    if (k == 63) {
-                        TRY(write_symbol(ac_table.from_input_byte(0x00)));
-                        break;
-                    }
-                    r += 1;
-                    continue;
+            auto coefficient = component[zigzag_map[k]];
+            if (coefficient == 0) {
+                if (k == 63) {
+                    TRY(append_symbol({ .byte = 0x00, .component_id = component_id, .is_dc = false }));
+                    break;
                 }
+                r += 1;
+                continue;
+            }
 
-                while (r > 15) {
-                    TRY(write_symbol(ac_table.from_input_byte(0xF0)));
-                    r -= 16;
-                }
+            while (r > 15) {
+                TRY(append_symbol({ .byte = 0xF0, .component_id = component_id, .is_dc = false }));
+                r -= 16;
+            }
 
-                {
-                    // F.3 - Sequential encoding of a non-zero AC coefficient
-                    auto const ssss = csize(coefficient);
-                    auto const rs = (r << 4) + ssss;
-                    TRY(write_symbol(ac_table.from_input_byte(rs)));
+            {
+                // F.3 - Sequential encoding of a non-zero AC coefficient
+                auto const ssss = csize(coefficient);
+                u8 const rs = (r << 4) + ssss;
+                TRY(append_symbol({ .byte = rs, .component_id = component_id, .is_dc = false }));
 
-                    if (coefficient < 0)
-                        coefficient -= 1;
+                if (coefficient < 0)
+                    coefficient -= 1;
 
-                    TRY(m_bit_stream.write_bits<u16>(coefficient, ssss));
-                }
+                TRY(m_symbols_and_bits.try_append(RawBits(coefficient, ssss)));
+            }
 
-                r = 0;
+            r = 0;
+        }
+        return {};
+    }
+
+    ErrorOr<void> write_symbols_to_stream()
+    {
+        for (auto const& symbol_or_bits : m_symbols_and_bits) {
+            if (symbol_or_bits.has<Symbol>()) {
+                auto symbol = symbol_or_bits.get<Symbol>();
+                auto const& huffman_table = [&]() {
+                    if (symbol.component_id == 0 || symbol.component_id == 3)
+                        return symbol.is_dc ? dc_luminance_huffman_table : ac_luminance_huffman_table;
+                    return symbol.is_dc ? dc_chrominance_huffman_table : ac_chrominance_huffman_table;
+                }();
+                TRY(write_symbol(huffman_table.from_input_byte(symbol.byte)));
+            } else {
+                auto bits = symbol_or_bits.get<RawBits>();
+                TRY(m_bit_stream.write_bits(bits.bits, bits.length));
             }
         }
+
+        return {};
+    }
+
+    static void find_smallest_frequencies(Array<u32, 257> const& frequencies, u16& v1, Optional<u16>& v2)
+    {
+        // FIXME: A min-heap with a custom comparator should be able to do the trick.
+
+        // "The procedure “Find V1 for least value of FREQ(V1) > 0” always selects the value
+        // with the largest value of V1 when more than one V1 with the same frequency occurs.
+        // The reserved code point is then guaranteed to be in the longest code word category."
+
+        u16 index_min {};
+        u16 second_index_min {};
+        u32 freq_min = NumericLimits<u32>::max();
+        u32 second_freq_min = NumericLimits<u32>::max();
+
+        for (auto [i, freq] : enumerate(frequencies)) {
+            if (freq == 0)
+                continue;
+            if (freq <= freq_min) {
+                second_index_min = index_min;
+                second_freq_min = freq_min;
+                index_min = i;
+                freq_min = freq;
+            } else if (freq <= second_freq_min) {
+                second_index_min = i;
+                second_freq_min = freq;
+            }
+        }
+
+        v1 = index_min;
+        if (second_freq_min != NumericLimits<u32>::max())
+            v2 = second_index_min;
+        else
+            v2.clear();
+    }
+
+    static Array<u8, 257> find_huffman_code_size(Array<u32, 257> frequencies)
+    {
+        // "Before starting the procedure, the values of FREQ are collected for V = 0 to 255
+        // and the FREQ value for V = 256 is set to 1."
+        frequencies[256] = 1;
+
+        // "the entries in CODESIZE are all set to 0"
+        Array<u8, 257> code_size {};
+
+        // "the indices in OTHERS are set to –1"
+        Array<i16, 257> others {};
+        others.fill(-1);
+
+        // Figure K.1 – Procedure to find Huffman code sizes
+        while (true) {
+            u16 v1 {};
+            Optional<u16> maybe_v2 {};
+            find_smallest_frequencies(frequencies, v1, maybe_v2);
+            if (!maybe_v2.has_value())
+                break;
+
+            auto v2 = maybe_v2.value();
+
+            frequencies[v1] += frequencies[v2];
+            frequencies[v2] = 0;
+
+        increment_v1_code_size:
+            code_size[v1] += 1;
+
+            if (others[v1] != -1) {
+                v1 = others[v1];
+                goto increment_v1_code_size;
+            }
+
+            others[v1] = v2;
+
+        increment_v2_code_size:
+            code_size[v2] += 1;
+            if (others[v2] != -1) {
+                v2 = others[v2];
+                goto increment_v2_code_size;
+            }
+        }
+
+        return code_size;
+    }
+
+    static void adjust_bits(Array<u8, 257>& bits)
+    {
+        // Figure K.3 – Procedure for limiting code lengths to 16 bits
+        u16 i = 32;
+        while (true) {
+            if (bits[i] > 0) {
+                auto j = i - 1;
+                do {
+                    j--;
+                } while (bits[j] == 0);
+
+                bits[i] = bits[i] - 2;
+                bits[i - 1] = bits[i - 1] + 1;
+                bits[j + 1] = bits[j + 1] + 2;
+                bits[j] = bits[j] - 1;
+            } else {
+                i -= 1;
+                if (i != 16)
+                    continue;
+
+                while (bits[i] == 0)
+                    --i;
+                bits[i] -= 1;
+                break;
+            }
+        }
+    }
+
+    static Array<u8, 257> count_bits(Array<u8, 257> const& code_size)
+    {
+        // "The count for each size is contained in the list, BITS. The counts in BITS are zero
+        // at the start of the procedure."
+        Array<u8, 257> bits {};
+
+        // Figure K.2 – Procedure to find the number of codes of each size
+        for (u16 i = 0; i < 257; ++i) {
+            if (code_size[i] == 0)
+                continue;
+            bits[code_size[i]] += 1;
+        }
+        adjust_bits(bits);
+
+        return bits;
+    }
+
+    static Vector<u8, 256> sort_input(Array<u8, 257> const& code_size)
+    {
+        // "Figure K.4 – Sorting of input values according to code size"
+        Vector<u8, 256> huffval {};
+        for (u8 i = 1; i <= 32; ++i) {
+            for (u16 j = 0; j <= 255; ++j) {
+                if (code_size[j] == i)
+                    huffval.append(j);
+            }
+        }
+        return huffval;
+    }
+
+    static ErrorOr<OutputHuffmanTable> compute_optimal_table(Array<u32, 257> const& distribution)
+    {
+        // K.2 A procedure for generating the lists which specify a Huffman code table
+
+        auto code_size = find_huffman_code_size(distribution);
+
+        auto bits = count_bits(code_size);
+
+        // "The input values are sorted according to code size"
+        auto huffval = sort_input(code_size);
+
+        // "At this point, the list of code lengths (BITS) and the list of values
+        // (HUFFVAL) can be used to generate the code tables."
+
+        Vector<OutputHuffmanTable::Symbol, 16> symbols;
+        u16 code = 0;
+        u32 symbol_index = 0;
+        for (auto [encoded_size, number_of_codes] : enumerate(bits)) {
+            for (u8 i = 0; i < number_of_codes; i++) {
+                TRY(symbols.try_append({ .input_byte = huffval[symbol_index], .code_length = static_cast<u8>(encoded_size), .word = code }));
+                code++;
+                symbol_index++;
+            }
+            code <<= 1;
+        }
+
+        return OutputHuffmanTable { move(symbols) };
+    }
+
+    ErrorOr<void> find_optimal_huffman_tables()
+    {
+        dc_luminance_huffman_table = TRY(compute_optimal_table(m_symbol_stats[0]));
+        dc_luminance_huffman_table.id = (0 << 4) | 0;
+        ac_luminance_huffman_table = TRY(compute_optimal_table(m_symbol_stats[1]));
+        ac_luminance_huffman_table.id = (1 << 4) | 0;
+        dc_chrominance_huffman_table = TRY(compute_optimal_table(m_symbol_stats[2]));
+        dc_chrominance_huffman_table.id = (0 << 4) | 1;
+        ac_chrominance_huffman_table = TRY(compute_optimal_table(m_symbol_stats[3]));
+        ac_chrominance_huffman_table.id = (1 << 4) | 1;
         return {};
     }
 
@@ -393,8 +686,11 @@ private:
     QuantizationTable m_luminance_quantization_table {};
     QuantizationTable m_chrominance_quantization_table {};
 
-    Vector<Macroblock> m_macroblocks {};
+    Vector<FloatMacroblock> m_macroblocks {};
     Array<i16, 4> m_last_dc_values {};
+
+    Array<Array<u32, 257>, 4> m_symbol_stats {};
+    Vector<SymbolOrRawBits> m_symbols_and_bits {};
 
     JPEGBigEndianOutputBitStream m_bit_stream;
 };
@@ -593,17 +889,8 @@ ErrorOr<void> add_scan_header(Stream& stream, Mode mode)
     return {};
 }
 
-ErrorOr<void> add_headers(Stream& stream, JPEGEncodingContext& context, JPEGWriter::Options const& options, IntSize size, Mode mode)
+ErrorOr<void> add_headers(Stream& stream, JPEGEncodingContext const& context, JPEGWriter::Options const& options, IntSize size, Mode mode)
 {
-    context.set_luminance_quantization_table(s_default_luminance_quantization_table, options.quality);
-    context.set_chrominance_quantization_table(s_default_chrominance_quantization_table, options.quality);
-
-    context.dc_luminance_huffman_table = s_default_dc_luminance_huffman_table;
-    context.dc_chrominance_huffman_table = s_default_dc_chrominance_huffman_table;
-
-    context.ac_luminance_huffman_table = s_default_ac_luminance_huffman_table;
-    context.ac_chrominance_huffman_table = s_default_ac_chrominance_huffman_table;
-
     TRY(add_start_of_image(stream));
 
     if (options.icc_data.has_value())
@@ -625,10 +912,16 @@ ErrorOr<void> add_headers(Stream& stream, JPEGEncodingContext& context, JPEGWrit
     return {};
 }
 
-ErrorOr<void> add_image(Stream& stream, JPEGEncodingContext& context, Mode mode)
+ErrorOr<void> add_image(Stream& stream, JPEGEncodingContext& context, JPEGEncoderOptions const& options, IntSize size, Mode mode)
 {
+    if (options.use_deringing == JPEGEncoderOptions::UseDeringing::Yes)
+        context.apply_deringing();
+    context.set_quantization_tables(options.quality);
+    context.convert_to_ycbcr(mode);
     context.fdct_and_quantization(mode);
-    TRY(context.write_huffman_stream(mode));
+    TRY(context.huffman_encode_macroblocks(mode));
+    TRY(add_headers(stream, context, options, size, mode));
+    TRY(context.write_huffman_stream());
     TRY(add_end_of_image(stream));
     return {};
 }
@@ -638,18 +931,16 @@ ErrorOr<void> add_image(Stream& stream, JPEGEncodingContext& context, Mode mode)
 ErrorOr<void> JPEGWriter::encode(Stream& stream, Bitmap const& bitmap, Options const& options)
 {
     JPEGEncodingContext context { JPEGBigEndianOutputBitStream { stream } };
-    TRY(add_headers(stream, context, options, bitmap.size(), Mode::RGB));
     TRY(context.initialize_mcu(bitmap));
-    TRY(add_image(stream, context, Mode::RGB));
+    TRY(add_image(stream, context, options, bitmap.size(), Mode::RGB));
     return {};
 }
 
 ErrorOr<void> JPEGWriter::encode(Stream& stream, CMYKBitmap const& bitmap, Options const& options)
 {
     JPEGEncodingContext context { JPEGBigEndianOutputBitStream { stream } };
-    TRY(add_headers(stream, context, options, bitmap.size(), Mode::CMYK));
     TRY(context.initialize_mcu(bitmap));
-    TRY(add_image(stream, context, Mode::CMYK));
+    TRY(add_image(stream, context, options, bitmap.size(), Mode::CMYK));
     return {};
 }
 

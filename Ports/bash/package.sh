@@ -1,19 +1,19 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='bash'
-version='5.2.37'
+version='5.3'
 useconfigure='true'
 use_fresh_config_sub='true'
 use_fresh_config_guess='true'
 config_sub_paths=("support/config.sub")
 config_guess_paths=("support/config.guess")
-configopts=("--disable-nls" "--without-bash-malloc")
+configopts=("--disable-nls" "--without-bash-malloc" "CFLAGS=-std=c17" "CFLAGS_FOR_BUILD=-std=c17")
 launcher_name='Bash'
 launcher_category='&Utilities'
 launcher_command='/usr/local/bin/bash'
 launcher_run_in_terminal='true'
-icon_file='https://static-00.iconduck.com/assets.00/bash-icon-224x256-qo4a7ex6.png'
+#icon_file=FIXME
 files=(
-    "https://ftpmirror.gnu.org/gnu/bash/bash-${version}.tar.gz#9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014da621ff"
+    "https://ftpmirror.gnu.org/gnu/bash/bash-${version}.tar.gz#0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba"
 )
 depends=(
     'readline'

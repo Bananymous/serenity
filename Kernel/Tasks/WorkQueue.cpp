@@ -8,18 +8,15 @@
 #include <Kernel/Arch/Processor.h>
 #include <Kernel/Sections.h>
 #include <Kernel/Tasks/Process.h>
-#include <Kernel/Tasks/WaitQueue.h>
 #include <Kernel/Tasks/WorkQueue.h>
 
 namespace Kernel {
 
 WorkQueue* g_io_work;
-WorkQueue* g_ata_work;
 
 UNMAP_AFTER_INIT void WorkQueue::initialize()
 {
     g_io_work = new WorkQueue("IO WorkQueue Task"sv);
-    g_ata_work = new WorkQueue("ATA WorkQueue Task"sv);
 }
 
 UNMAP_AFTER_INIT WorkQueue::WorkQueue(StringView name)
@@ -39,7 +36,7 @@ UNMAP_AFTER_INIT WorkQueue::WorkQueue(StringView name)
                 if (have_more)
                     continue;
             }
-            [[maybe_unused]] auto result = m_wait_queue.wait_on({});
+            MUST(m_wait_queue.wait_until(m_items, [](auto& items) -> bool { return !items.is_empty(); }));
         }
         Process::current().sys$exit(0);
         VERIFY_NOT_REACHED();
@@ -52,7 +49,7 @@ void WorkQueue::do_queue(WorkItem& item)
     m_items.with([&](auto& items) {
         items.append(item);
     });
-    m_wait_queue.wake_one();
+    m_wait_queue.notify_one();
 }
 
 }

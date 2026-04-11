@@ -120,20 +120,20 @@ bool Thread::JoinBlocker::unblock(void* value, bool from_add_blocker)
     return true;
 }
 
-Thread::WaitQueueBlocker::WaitQueueBlocker(WaitQueue& wait_queue, StringView block_reason)
+Thread::DeprecatedWaitQueueBlocker::DeprecatedWaitQueueBlocker(DeprecatedWaitQueue& wait_queue, StringView block_reason)
     : m_wait_queue(wait_queue)
     , m_block_reason(block_reason)
 {
 }
 
-bool Thread::WaitQueueBlocker::setup_blocker()
+bool Thread::DeprecatedWaitQueueBlocker::setup_blocker()
 {
     return add_to_blocker_set(m_wait_queue);
 }
 
-Thread::WaitQueueBlocker::~WaitQueueBlocker() = default;
+Thread::DeprecatedWaitQueueBlocker::~DeprecatedWaitQueueBlocker() = default;
 
-bool Thread::WaitQueueBlocker::unblock()
+bool Thread::DeprecatedWaitQueueBlocker::unblock()
 {
     {
         SpinlockLocker lock(m_lock);
@@ -359,8 +359,6 @@ bool Thread::SelectBlocker::setup_blocker()
     for (auto& fd_entry : m_fds) {
         fd_entry.unblocked_flags = FileBlocker::BlockFlags::None;
 
-        if (!should_block)
-            continue;
         if (!fd_entry.description) {
             should_block = false;
             continue;
@@ -401,8 +399,6 @@ bool Thread::SelectBlocker::unblock_if_conditions_are_met(bool from_add_blocker,
 
     {
         SpinlockLocker lock(m_lock);
-        if (m_did_unblock)
-            return false;
 
         VERIFY(fd_info.description);
         auto unblock_flags = fd_info.description->should_unblock(fd_info.block_flags);
@@ -619,7 +615,7 @@ bool Thread::WaitBlockerSet::unblock(Process& process, WaitBlocker::UnblockFlags
         }
         if (!updated_existing) {
             dbgln_if(WAITBLOCK_DEBUG, "WaitBlockerSet[{}] add {} flags: {}", m_process, process, (int)flags);
-            m_processes.append(ProcessBlockInfo(process, flags, signal));
+            m_processes.try_append(ProcessBlockInfo(process, flags, signal)).release_value_but_fixme_should_propagate_errors();
         }
     }
     return did_unblock_any;
@@ -684,22 +680,14 @@ void Thread::WaitBlocker::will_unblock_immediately_without_blocking(UnblockImmed
 
 void Thread::WaitBlocker::was_unblocked(bool)
 {
-    bool got_sigchld, try_unblock;
+    bool try_unblock;
     {
         SpinlockLocker lock(m_lock);
         try_unblock = !m_did_unblock;
-        got_sigchld = m_got_sigchild;
     }
 
     if (try_unblock)
         Process::current().wait_blocker_set().try_unblock(*this);
-
-    // If we were interrupted by SIGCHLD (which gets special handling
-    // here) we're not going to return with EINTR. But we're going to
-    // deliver SIGCHLD (only) here.
-    auto* current_thread = Thread::current();
-    if (got_sigchld && current_thread->state() != State::Stopped)
-        current_thread->try_dispatch_one_pending_signal(SIGCHLD);
 }
 
 void Thread::WaitBlocker::do_was_disowned()
@@ -717,11 +705,7 @@ void Thread::WaitBlocker::do_set_result(siginfo_t const& result)
 
     if (do_get_interrupted_by_signal() == SIGCHLD) {
         // This makes it so that wait() will return normally despite the
-        // fact that SIGCHLD was delivered. Calling do_clear_interrupted_by_signal
-        // will disable dispatching signals in Thread::block and prevent
-        // it from returning with EINTR. We will then manually dispatch
-        // SIGCHLD (and only SIGCHLD) in was_unblocked.
-        m_got_sigchild = true;
+        // fact that SIGCHLD was delivered.
         do_clear_interrupted_by_signal();
     }
 }

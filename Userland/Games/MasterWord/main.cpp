@@ -36,13 +36,13 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     TRY(Core::System::unveil("/tmp/session/%sid/portal/launch", "rw"));
     TRY(Core::System::unveil("/res", "r"));
+    TRY(Core::System::unveil("/usr/share/MasterWord", "r"));
     TRY(Core::System::unveil(nullptr, nullptr));
 
     auto app_icon = TRY(GUI::Icon::try_create_default_icon("app-masterword"sv));
 
     auto window = GUI::Window::construct();
     window->set_icon(app_icon.bitmap_for_size(16));
-    window->set_double_buffering_enabled(false);
     window->set_title("MasterWord");
     window->set_resizable(true);
     window->set_auto_shrink(true);

@@ -55,14 +55,14 @@ public:
         return adopt_ref(*new JsonArrayModel(json_path, move(fields)));
     }
 
-    virtual ~JsonArrayModel() override = default;
+    virtual ~JsonArrayModel() override;
 
     virtual int row_count(ModelIndex const& = ModelIndex()) const override { return m_array.size(); }
     virtual int column_count(ModelIndex const& = ModelIndex()) const override { return m_fields.size(); }
     virtual ErrorOr<String> column_name(int column) const override { return m_fields[column].column_name; }
     virtual Variant data(ModelIndex const&, ModelRole = ModelRole::Display) const override;
     virtual void invalidate() override;
-    virtual void update();
+    void update();
 
     ByteString const& json_path() const { return m_json_path; }
     void set_json_path(ByteString const& json_path);

@@ -364,6 +364,9 @@ fetch_simple() {
                 run_nocd bsdtar xf "${PORT_META_DIR}/${filename}" || run_nocd unzip -qo "${PORT_META_DIR}/${filename}"
                 run touch ".${filename}_extracted"
                 ;;
+            *.exe|*.htm)
+                cp "${PORT_META_DIR}/${filename}" ./
+                ;;
             *)
                 echo "Note: no case for file $filename."
                 cp "${PORT_META_DIR}/${filename}" ./
@@ -471,9 +474,9 @@ func_defined pre_configure || pre_configure() {
 func_defined configure || configure() {
     chmod +x "${workdir}"/"$configscript"
     if [[ -n "${SERENITY_SOURCE_DIR:-}" ]]; then
-        run ./"$configscript" --host="${SERENITY_ARCH}-pc-serenity" "${configopts[@]}"
+        run ./"$configscript" --host="${SERENITY_ARCH}-serenity" "${configopts[@]}"
     else
-        run ./"$configscript" --build="${SERENITY_ARCH}-pc-serenity" "${configopts[@]}"
+        run ./"$configscript" --build="${SERENITY_ARCH}-serenity" "${configopts[@]}"
     fi
 }
 func_defined post_configure || post_configure() {

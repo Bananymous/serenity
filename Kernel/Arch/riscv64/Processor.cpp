@@ -1,13 +1,16 @@
 /*
- * Copyright (c) 2023, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2023, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/API/RISCVExtensionBitmask.h>
 #include <Kernel/Arch/Interrupts.h>
 #include <Kernel/Arch/Processor.h>
 #include <Kernel/Arch/TrapFrame.h>
+#include <Kernel/Firmware/DeviceTree/DeviceTree.h>
 #include <Kernel/Interrupts/InterruptDisabler.h>
+#include <Kernel/Library/Panic.h>
 #include <Kernel/Sections.h>
 #include <Kernel/Security/Random.h>
 #include <Kernel/Tasks/Process.h>
@@ -19,7 +22,83 @@ extern "C" u8 asm_trap_handler[];
 
 Processor* g_current_processor;
 
-static void store_fpu_state(FPUState* fpu_state)
+static void store_vector_state(FPUState& fpu_state)
+{
+    fpu_state.vstart = RISCV64::CSR::read<RISCV64::CSR::Address::VSTART_>();
+    fpu_state.vcsr = RISCV64::CSR::read<RISCV64::CSR::Address::VCSR>();
+    fpu_state.vl = RISCV64::CSR::read<RISCV64::CSR::Address::VL>();
+    fpu_state.vtype = RISCV64::CSR::read<RISCV64::CSR::Address::VTYPE>();
+
+    asm volatile(R"(
+    .option push
+    .option arch, +v
+
+        csrr t0, vlenb
+        slli t0, t0, 3    # 8 registers at once (2^3 = 8)
+        csrw vstart, zero
+
+        # Save v0-v7.
+        vs8r.v v0, (%0)
+        add %0, %0, t0
+
+        # Save v8-v15.
+        vs8r.v v8, (%0)
+        add %0, %0, t0
+
+        # Save v16-v23.
+        vs8r.v v16, (%0)
+        add %0, %0, t0
+
+        # Save v24-v31.
+        vs8r.v v24, (%0)
+
+    .option pop
+    )" ::"r"(fpu_state.v)
+        : "t0", "memory");
+}
+
+static void load_vector_state(FPUState const& fpu_state)
+{
+    asm volatile(R"(
+    .option push
+    .option arch, +v
+
+        csrr t0, vlenb
+        slli t0, t0, 3    # 8 registers at once (2^3 = 8)
+        csrw vstart, zero
+
+        # Restore v0-v7.
+        vl8r.v v0, (%0)
+        add %0, %0, t0
+
+        # Restore v8-v15.
+        vl8r.v v8, (%0)
+        add %0, %0, t0
+
+        # Restore v16-v23.
+        vl8r.v v16, (%0)
+        add %0, %0, t0
+
+        # Restore v24-v31.
+        vl8r.v v24, (%0)
+
+    .option pop
+    )" ::"r"(fpu_state.v)
+        : "t0", "memory");
+
+    RISCV64::CSR::write<RISCV64::CSR::Address::VSTART_>(fpu_state.vstart);
+    RISCV64::CSR::write<RISCV64::CSR::Address::VCSR>(fpu_state.vcsr);
+
+    asm volatile(R"(
+    .option push
+    .option arch, +v
+        vsetvl zero, %[vl], %[vtype]
+    .option pop
+    )" ::[vl] "r"(fpu_state.vl),
+        [vtype] "r"(fpu_state.vtype));
+}
+
+void ProcessorBase::store_fpu_state(FPUState& fpu_state)
 {
     asm volatile(
         "fsd f0, 0*8(%0) \n"
@@ -56,11 +135,14 @@ static void store_fpu_state(FPUState* fpu_state)
         "fsd f31, 31*8(%0) \n"
 
         "csrr t0, fcsr \n"
-        "sd t0, 32*8(%0) \n" ::"r"(fpu_state)
+        "sd t0, 32*8(%0) \n" ::"r"(&fpu_state)
         : "t0", "memory");
+
+    if (Processor::current().has_feature(CPUFeature::V))
+        store_vector_state(fpu_state);
 }
 
-static void load_fpu_state(FPUState* fpu_state)
+void ProcessorBase::load_fpu_state(FPUState const& fpu_state)
 {
     asm volatile(
         "fld f0, 0*8(%0) \n"
@@ -97,12 +179,14 @@ static void load_fpu_state(FPUState* fpu_state)
         "fld f31, 31*8(%0) \n"
 
         "ld t0, 32*8(%0) \n"
-        "csrw fcsr, t0 \n" ::"r"(fpu_state)
+        "csrw fcsr, t0 \n" ::"r"(&fpu_state)
         : "t0", "memory");
+
+    if (Processor::current().has_feature(CPUFeature::V))
+        load_vector_state(fpu_state);
 }
 
-template<typename T>
-void ProcessorBase<T>::early_initialize(u32 cpu)
+void ProcessorBase::early_initialize(u32 cpu)
 {
     VERIFY(g_current_processor == nullptr);
     m_cpu = cpu;
@@ -110,28 +194,23 @@ void ProcessorBase<T>::early_initialize(u32 cpu)
     g_current_processor = static_cast<Processor*>(this);
 }
 
-template<typename T>
-void ProcessorBase<T>::initialize(u32)
+void ProcessorBase::initialize(u32)
 {
     m_deferred_call_pool.init();
 
     // FIXME: Actually set the correct count when we support SMP on riscv64.
     g_total_processors.store(1, AK::MemoryOrder::memory_order_release);
 
-    // Enable the FPU
-    auto sstatus = RISCV64::CSR::SSTATUS::read();
-    sstatus.FS = RISCV64::CSR::SSTATUS::FloatingPointStatus::Initial;
-    RISCV64::CSR::SSTATUS::write(sstatus);
+    auto* self = static_cast<Processor*>(this);
 
-    store_fpu_state(&s_clean_fpu_state);
+    self->m_info.emplace();
 
     RISCV64::CSR::write<RISCV64::CSR::Address::STVEC>(bit_cast<FlatPtr>(+asm_trap_handler));
 
     initialize_interrupts();
 }
 
-template<typename T>
-[[noreturn]] void ProcessorBase<T>::halt()
+[[noreturn]] void ProcessorBase::halt()
 {
     // WFI ignores the value of sstatus.SIE, so we can't use disable_interrupts().
     // Instead, disable all interrupts sources by setting sie to zero.
@@ -140,42 +219,37 @@ template<typename T>
         asm volatile("wfi");
 }
 
-template<typename T>
-void ProcessorBase<T>::flush_tlb_local(VirtualAddress vaddr, size_t page_count)
+void ProcessorBase::flush_tlb_local(VirtualAddress vaddr, size_t page_count)
 {
     auto addr = vaddr.get();
     while (page_count > 0) {
         asm volatile("sfence.vma %0"
-                     :
-                     : "r"(addr)
-                     : "memory");
+            :
+            : "r"(addr)
+            : "memory");
         addr += PAGE_SIZE;
         page_count--;
     }
 }
 
-template<typename T>
-void ProcessorBase<T>::flush_entire_tlb_local()
+void ProcessorBase::flush_entire_tlb_local()
 {
     asm volatile("sfence.vma");
 }
 
-template<typename T>
-void ProcessorBase<T>::flush_tlb(Memory::PageDirectory const*, VirtualAddress vaddr, size_t page_count)
+void ProcessorBase::flush_tlb(Memory::PageDirectory const*, VirtualAddress vaddr, size_t page_count)
 {
     // FIXME: Use the SBI RFENCE extension to flush the TLB of other harts when we support SMP on riscv64.
     flush_tlb_local(vaddr, page_count);
 }
 
-template<typename T>
-void ProcessorBase<T>::flush_instruction_cache(VirtualAddress, size_t)
+void ProcessorBase::flush_instruction_cache(VirtualAddress, size_t)
 {
     // FIXME: Use the SBI RFENCE extension to flush the instruction cache of other harts when we support SMP on riscv64.
     asm volatile("fence.i" ::: "memory");
 }
 
-template<typename T>
-u32 ProcessorBase<T>::clear_critical()
+u32 ProcessorBase::clear_critical()
 {
     InterruptDisabler disabler;
     auto prev_critical = in_critical();
@@ -186,15 +260,13 @@ u32 ProcessorBase<T>::clear_critical()
     return prev_critical;
 }
 
-template<typename T>
-u32 ProcessorBase<T>::smp_wake_n_idle_processors(u32)
+u32 ProcessorBase::smp_wake_n_idle_processors(u32)
 {
     // FIXME: Actually wake up other cores when SMP is supported for riscv64.
     return 0;
 }
 
-template<typename T>
-void ProcessorBase<T>::initialize_context_switching(Thread& initial_thread)
+void ProcessorBase::initialize_context_switching(Thread& initial_thread)
 {
     VERIFY(initial_thread.process().is_kernel_process());
 
@@ -219,8 +291,7 @@ void ProcessorBase<T>::initialize_context_switching(Thread& initial_thread)
     VERIFY_NOT_REACHED();
 }
 
-template<typename T>
-void ProcessorBase<T>::switch_context(Thread*& from_thread, Thread*& to_thread)
+void ProcessorBase::switch_context(Thread*& from_thread, Thread*& to_thread)
 {
     VERIFY(!m_in_irq);
     VERIFY(m_in_critical == 1);
@@ -364,8 +435,7 @@ extern "C" FlatPtr do_init_context(Thread* thread, u32 new_interrupts_state)
     return Processor::current().init_context(*thread, true);
 }
 
-template<typename T>
-void ProcessorBase<T>::assume_context(Thread& thread, InterruptsState new_interrupts_state)
+void ProcessorBase::assume_context(Thread& thread, InterruptsState new_interrupts_state)
 {
     dbgln_if(CONTEXT_SWITCH_DEBUG, "Assume context for thread {} {}", VirtualAddress(&thread), thread);
 
@@ -380,8 +450,7 @@ void ProcessorBase<T>::assume_context(Thread& thread, InterruptsState new_interr
     VERIFY_NOT_REACHED();
 }
 
-template<typename T>
-FlatPtr ProcessorBase<T>::init_context(Thread& thread, bool leave_crit)
+FlatPtr ProcessorBase::init_context(Thread& thread, bool leave_crit)
 {
     VERIFY(g_scheduler_lock.is_locked());
     if (leave_crit) {
@@ -440,53 +509,24 @@ FlatPtr ProcessorBase<T>::init_context(Thread& thread, bool leave_crit)
     return stack_top;
 }
 
-// FIXME: Figure out if we can fully share this code with x86.
-template<typename T>
-void ProcessorBase<T>::exit_trap(TrapFrame& trap)
+void ProcessorBase::idle_begin() const
 {
-    VERIFY_INTERRUPTS_DISABLED();
-    VERIFY(&Processor::current() == this);
+    // FIXME: Implement this when SMP for riscv64 is supported.
+}
 
-    // Temporarily enter a critical section. This is to prevent critical
-    // sections entered and left within e.g. smp_process_pending_messages
-    // to trigger a context switch while we're executing this function
-    // See the comment at the end of the function why we don't use
-    // ScopedCritical here.
-    m_in_critical = m_in_critical + 1;
+void ProcessorBase::idle_end() const
+{
+    // FIXME: Implement this when SMP for riscv64 is supported.
+}
 
-    // FIXME: Figure out if we need prev_irq_level, see duplicated code in Kernel/Arch/x86/common/Processor.cpp
-    m_in_irq = 0;
+void ProcessorBase::smp_enable()
+{
+    // FIXME: Implement this when SMP for riscv64 is supported.
+}
 
-    // Process the deferred call queue. Among other things, this ensures
-    // that any pending thread unblocks happen before we enter the scheduler.
-    m_deferred_call_pool.execute_pending();
-
-    auto* current_thread = Processor::current_thread();
-    if (current_thread) {
-        auto& current_trap = current_thread->current_trap();
-        current_trap = trap.next_trap;
-        ExecutionMode new_previous_mode;
-        if (current_trap) {
-            VERIFY(current_trap->regs);
-            new_previous_mode = current_trap->regs->previous_mode();
-        } else {
-            // If we don't have a higher level trap then we're back in user mode.
-            // Which means that the previous mode prior to being back in user mode was kernel mode
-            new_previous_mode = ExecutionMode::Kernel;
-        }
-
-        if (current_thread->set_previous_mode(new_previous_mode))
-            current_thread->update_time_scheduled(TimeManagement::scheduler_current_time(), true, false);
-    }
-
-    VERIFY_INTERRUPTS_DISABLED();
-
-    // Leave the critical section without actually enabling interrupts.
-    // We don't want context switches to happen until we're explicitly
-    // triggering a switch in check_invoke_scheduler.
-    m_in_critical = m_in_critical - 1;
-    if (!m_in_irq && !m_in_critical)
-        check_invoke_scheduler();
+bool ProcessorBase::is_smp_enabled()
+{
+    return false;
 }
 
 extern "C" void context_first_init(Thread* from_thread, Thread* to_thread);
@@ -503,7 +543,7 @@ extern "C" void enter_thread_context(Thread* from_thread, Thread* to_thread)
 
     Processor::set_current_thread(*to_thread);
 
-    store_fpu_state(&from_thread->fpu_state());
+    Processor::store_fpu_state(from_thread->fpu_state());
 
     auto& from_regs = from_thread->regs();
     auto& to_regs = to_thread->regs();
@@ -518,7 +558,7 @@ extern "C" void enter_thread_context(Thread* from_thread, Thread* to_thread)
     VERIFY(in_critical > 0);
     Processor::restore_critical(in_critical);
 
-    load_fpu_state(&to_thread->fpu_state());
+    Processor::load_fpu_state(to_thread->fpu_state());
 }
 
 NAKED void thread_context_first_enter()
@@ -553,24 +593,114 @@ NAKED void do_assume_context(Thread*, u32)
     // clang-format on
 }
 
-template<typename T>
-StringView ProcessorBase<T>::platform_string()
+StringView ProcessorBase::platform_string()
 {
     return "riscv64"sv;
 }
 
-template<typename T>
-void ProcessorBase<T>::wait_for_interrupt() const
+void ProcessorBase::idle() const
 {
-    asm("wfi");
+    VERIFY_INTERRUPTS_DISABLED();
+
+    idle_begin();
+    asm volatile(R"(
+        # Go to sleep. Execution will continue when the processor receives an interrupt, even with interrupts disabled.
+        # WFI is allowed to cause spurious wakeups, so implementing it as a NOP is legal.
+        # In that case the idle loop is constantly busy waiting for interrupts.
+        wfi
+
+        # Shortly enable interrupts to call the interrupt handler for the received interrupt.
+        csrsi sstatus, 1 << 1 # sstatus.SIE = 1
+        csrci sstatus, 1 << 1 # sstatus.SIE = 0
+    )" :);
+    idle_end();
 }
 
-template<typename T>
-Processor& ProcessorBase<T>::by_id(u32)
+Processor& ProcessorBase::by_id(u32)
 {
     TODO_RISCV64();
 }
 
+void Processor::find_and_parse_devicetree_node()
+{
+    // https://www.kernel.org/doc/Documentation/devicetree/bindings/riscv/cpus.yaml
+    // https://www.kernel.org/doc/Documentation/devicetree/bindings/riscv/extensions.yaml
+
+    // Find the CPU node for this hart.
+    auto cpus_node = DeviceTree::get().get_child("cpus"sv);
+    if (!cpus_node.has_value())
+        PANIC("No /cpus node in devicetree");
+
+    for (auto const& [cpu_name, cpu] : cpus_node->children()) {
+        auto device_type = cpu.get_property("device_type"sv);
+        if (!device_type.has_value() || device_type->as_string() != "cpu"sv)
+            continue;
+
+        if (!cpu.is_compatible_with("riscv"sv))
+            continue;
+
+        auto reg_or_error = cpu.reg();
+        if (reg_or_error.is_error())
+            continue;
+        auto reg = reg_or_error.release_value();
+
+        if (reg.entry_count() != 1)
+            PANIC("RISC-V CPU node {} has invalid reg element count: {}", cpu_name, reg.entry_count());
+
+        auto reg_entry = MUST(reg.entry(0));
+
+        auto hart_id_or_error = reg_entry.bus_address().as_flatptr();
+        if (hart_id_or_error.is_error())
+            PANIC("RISC-V CPU node {} has invalid reg property: {:hex-dump}", cpu_name, reg_entry.bus_address().raw());
+        auto hart_id = hart_id_or_error.release_value();
+
+        // FIXME: Use the correct hart ID here once we support SMP on RISC-V.
+        if (hart_id != g_boot_info.arch_specific.boot_hart_id)
+            continue;
+
+        auto isa_extensions = cpu.get_property("riscv,isa-extensions"sv);
+        if (!isa_extensions.has_value()) {
+            dbgln("RISC-V CPU node {} doesn't have the \"riscv,isa-extensions\" property, don't know what extensions are supported", cpu_name);
+            m_features = CPUFeature::Type(0);
+            break;
+        }
+
+        m_features = isa_extensions_property_to_cpu_features(isa_extensions.value());
+
+        m_info->build_isa_string(*this);
+        dmesgln("CPU[{}]: ISA: {}", id(), m_info->isa_string());
+
+        // Enable the floating-point unit and vector extension.
+        auto sstatus = RISCV64::CSR::SSTATUS::read();
+
+        sstatus.FS = RISCV64::CSR::SSTATUS::FloatingPointStatus::Initial;
+        if (has_feature(CPUFeature::V))
+            sstatus.VS = RISCV64::CSR::SSTATUS::VectorStatus::Initial;
+
+        RISCV64::CSR::SSTATUS::write(sstatus);
+
+        if (has_feature(CPUFeature::V)) {
+            auto vlenb = RISCV64::CSR::read<RISCV64::CSR::Address::VLENB>();
+            if (vlenb > MAX_SUPPORTED_VLENB)
+                PANIC("Unsupported vector register size: {} bits", vlenb * 8);
+            dmesgln("CPU[{}]: VLEN={}", id(), vlenb * 8);
+        }
+
+        store_fpu_state(s_clean_fpu_state);
+
+        generate_userspace_extension_bitmask();
+
+        break;
+    }
 }
 
-#include <Kernel/Arch/ProcessorFunctions.include>
+void Processor::generate_userspace_extension_bitmask()
+{
+#define __ENUMERATE_RISCV_EXTENSION_BITMASK_BIT(feature_name, group_id, bit_position) \
+    if (has_feature(CPUFeature::feature_name))                                        \
+        m_userspace_extension_bitmask[group_id] |= 1zu << bit_position;
+    ENUMERATE_RISCV_EXTENSION_BITMASK_BITS(__ENUMERATE_RISCV_EXTENSION_BITMASK_BIT)
+#undef __ENUMERATE_RISCV_EXTENSION
+}
+
+}

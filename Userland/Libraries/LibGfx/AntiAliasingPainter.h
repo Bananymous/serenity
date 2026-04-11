@@ -8,6 +8,7 @@
 
 #include <LibGfx/Color.h>
 #include <LibGfx/CornerRadius.h>
+#include <LibGfx/EdgeFlagPathRasterizer.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/LineStyle.h>
 #include <LibGfx/PaintStyle.h>
@@ -24,22 +25,26 @@ public:
     {
     }
 
-    enum class LineLengthMode {
-        // E.g. A line from 0,1 -> 2,1 is 3px long
-        PointToPoint,
-        // E.g. A line from 0,1 -> 2,1 is 2px long
-        Distance
-    };
-
-    void draw_line(IntPoint, IntPoint, Color, float thickness = 1, LineStyle style = LineStyle::Solid, Color alternate_color = Color::Transparent, LineLengthMode line_length_mode = LineLengthMode::PointToPoint);
-    void draw_line(FloatPoint, FloatPoint, Color, float thickness = 1, LineStyle style = LineStyle::Solid, Color alternate_color = Color::Transparent, LineLengthMode line_length_mode = LineLengthMode::PointToPoint);
-    void draw_line(FloatLine line, Color color, float thickness = 1, LineStyle style = LineStyle::Solid, Color alternate_color = Color::Transparent, LineLengthMode line_length_mode = LineLengthMode::PointToPoint)
+    void draw_line(IntPoint, IntPoint, Color, float thickness = 1, LineStyle style = LineStyle::Solid, Color alternate_color = Color::Transparent);
+    void draw_line(FloatPoint, FloatPoint, Color, float thickness = 1, LineStyle style = LineStyle::Solid, Color alternate_color = Color::Transparent);
+    void draw_line(FloatLine line, Color color, float thickness = 1, LineStyle style = LineStyle::Solid, Color alternate_color = Color::Transparent)
     {
-        draw_line(line.a(), line.b(), color, thickness, style, alternate_color, line_length_mode);
+        draw_line(line.a(), line.b(), color, thickness, style, alternate_color);
     }
 
-    void fill_path(Path const&, Color, WindingRule rule = WindingRule::Nonzero);
-    void fill_path(Path const&, PaintStyle const& paint_style, float opacity = 1.0f, WindingRule rule = WindingRule::Nonzero);
+    template<typename SampleMode = Sample32xAA>
+    void fill_path(Path const& path, Color color, WindingRule winding_rule = WindingRule::Nonzero)
+    {
+        EdgeFlagPathRasterizer<SampleMode> rasterizer(path_bounds(path));
+        rasterizer.fill(m_underlying_painter, path, color, winding_rule, m_transform.translation());
+    }
+
+    template<typename SampleMode = Sample32xAA>
+    void fill_path(Path const& path, PaintStyle const& paint_style, float opacity = 1.0f, WindingRule winding_rule = WindingRule::Nonzero)
+    {
+        EdgeFlagPathRasterizer<SampleMode> rasterizer(path_bounds(path));
+        rasterizer.fill(m_underlying_painter, path, paint_style, opacity, winding_rule, m_transform.translation());
+    }
 
     void stroke_path(Path const&, Color, Path::StrokeStyle const& stroke_style);
     void stroke_path(Path const&, PaintStyle const& paint_style, Path::StrokeStyle const&, float opacity = 1.0f);
@@ -77,9 +82,6 @@ private:
     };
 
     Range draw_ellipse_part(IntPoint a_rect, int radius_a, int radius_b, Color alternate_color, bool flip_x_and_y, Optional<Range> x_clip, BlendMode blend_mode);
-
-    void draw_anti_aliased_line(FloatPoint, FloatPoint, Color, float thickness, LineStyle, Color, LineLengthMode);
-    void draw_dotted_line(IntPoint, IntPoint, Gfx::Color, int thickness);
 
     Painter& m_underlying_painter;
     AffineTransform m_transform;

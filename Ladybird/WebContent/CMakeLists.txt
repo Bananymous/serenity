@@ -14,77 +14,38 @@ set(WEBCONTENT_SOURCES
     ../Utilities.cpp
 )
 
-if (ENABLE_QT)
-    qt_add_executable(WebContent ${WEBCONTENT_SOURCES})
-    target_sources(WebContent PRIVATE
-        ../Qt/EventLoopImplementationQt.cpp
-        ../Qt/EventLoopImplementationQtEventTarget.cpp
-        ../Qt/RequestManagerQt.cpp
-        ../Qt/StringUtils.cpp
-        ../Qt/WebSocketQt.cpp
-        ../Qt/WebSocketImplQt.cpp
-        main.cpp
-    )
-    target_link_libraries(WebContent PRIVATE Qt::Core Qt::Network)
-    target_compile_definitions(WebContent PRIVATE HAVE_QT=1)
+add_library(webcontent STATIC ${WEBCONTENT_SOURCES})
+set_target_properties(webcontent PROPERTIES AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
 
-    if (NOT HAVE_PULSEAUDIO)
-        find_package(Qt6 REQUIRED COMPONENTS Multimedia)
-
-        target_sources(WebContent PRIVATE
-            ../Qt/AudioCodecPluginQt.cpp
-            ../Qt/AudioThread.cpp
-        )
-
-        target_link_libraries(WebContent PRIVATE Qt::Multimedia)
-        target_compile_definitions(WebContent PRIVATE HAVE_QT_MULTIMEDIA=1)
-    endif()
-else()
-    set(LIB_TYPE STATIC)
-    if (IOS)
-        set(LIB_TYPE SHARED)
-    endif()
-    add_library(webcontent ${LIB_TYPE} ${WEBCONTENT_SOURCES})
-    target_include_directories(webcontent PRIVATE ${SERENITY_SOURCE_DIR}/Userland/Services/)
-    target_include_directories(webcontent PRIVATE ${SERENITY_SOURCE_DIR}/Userland/)
-    target_include_directories(webcontent PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/..)
-    target_link_libraries(webcontent PRIVATE LibAudio LibCore LibFileSystem LibGfx LibIPC LibJS LibMain LibWeb LibWebSocket LibProtocol LibWebView LibImageDecoderClient)
-    target_sources(webcontent PUBLIC FILE_SET ladybird TYPE HEADERS
-        BASE_DIRS ${SERENITY_SOURCE_DIR}
-        FILES ../FontPlugin.h
-              ../ImageCodecPlugin.h
-    )
-    target_sources(webcontent PUBLIC FILE_SET server TYPE HEADERS
-        BASE_DIRS ${SERENITY_SOURCE_DIR}/Userland/Services
-        FILES ${WEBCONTENT_SOURCE_DIR}/ConnectionFromClient.h
-              ${WEBCONTENT_SOURCE_DIR}/ConsoleGlobalEnvironmentExtensions.h
-              ${WEBCONTENT_SOURCE_DIR}/Forward.h
-              ${WEBCONTENT_SOURCE_DIR}/PageHost.h
-              ${WEBCONTENT_SOURCE_DIR}/WebContentConsoleClient.h
-              ${WEBCONTENT_SOURCE_DIR}/WebDriverConnection.h
-    )
-
-    add_executable(WebContent main.cpp)
-    target_link_libraries(WebContent PRIVATE webcontent)
-endif()
-
-target_include_directories(WebContent PRIVATE ${SERENITY_SOURCE_DIR}/Userland/Services/)
-target_include_directories(WebContent PRIVATE ${SERENITY_SOURCE_DIR}/Userland/)
-target_include_directories(WebContent PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/..)
-target_link_libraries(WebContent PRIVATE LibAudio LibCore LibFileSystem LibGfx LibImageDecoderClient LibIPC LibJS LibMain LibSQL LibWeb LibWebSocket LibProtocol LibWebView LibURL)
+target_include_directories(webcontent PUBLIC ${SERENITY_SOURCE_DIR}/Userland/Services/)
+target_include_directories(webcontent PUBLIC ${SERENITY_SOURCE_DIR}/Userland/)
+target_include_directories(webcontent PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/..)
+target_link_libraries(webcontent PUBLIC LibAudio LibCore LibFileSystem LibGfx LibIPC LibJS LibMain LibWeb LibWebSocket LibProtocol LibWebView LibImageDecoderClient)
 
 if (HAVE_PULSEAUDIO)
-    target_compile_definitions(WebContent PRIVATE HAVE_PULSEAUDIO=1)
-    if (TARGET webcontent)
-        target_compile_definitions(webcontent PRIVATE HAVE_PULSEAUDIO=1)
-    endif()
+    target_compile_definitions(webcontent PUBLIC HAVE_PULSEAUDIO=1)
 endif()
 
 if (HAS_ACCELERATED_GRAPHICS)
-    target_compile_definitions(WebContent PRIVATE HAS_ACCELERATED_GRAPHICS)
-    target_link_libraries(WebContent PRIVATE LibAccelGfx)
-    if (TARGET webcontent)
-        target_compile_definitions(webcontent PRIVATE HAS_ACCELERATED_GRAPHICS)
-        target_link_libraries(webcontent PRIVATE LibAccelGfx)
-    endif()
+    target_compile_definitions(webcontent PUBLIC HAS_ACCELERATED_GRAPHICS)
+    target_link_libraries(webcontent PUBLIC LibAccelGfx)
 endif()
+
+add_executable(WebContent main.cpp)
+
+target_link_libraries(WebContent PRIVATE webcontent LibSQL LibURL)
+
+target_sources(webcontent PUBLIC FILE_SET ladybird TYPE HEADERS
+    BASE_DIRS ${SERENITY_SOURCE_DIR}
+    FILES ../FontPlugin.h
+          ../ImageCodecPlugin.h
+)
+target_sources(webcontent PUBLIC FILE_SET server TYPE HEADERS
+    BASE_DIRS ${SERENITY_SOURCE_DIR}/Userland/Services
+    FILES ${WEBCONTENT_SOURCE_DIR}/ConnectionFromClient.h
+          ${WEBCONTENT_SOURCE_DIR}/ConsoleGlobalEnvironmentExtensions.h
+          ${WEBCONTENT_SOURCE_DIR}/Forward.h
+          ${WEBCONTENT_SOURCE_DIR}/PageHost.h
+          ${WEBCONTENT_SOURCE_DIR}/WebContentConsoleClient.h
+          ${WEBCONTENT_SOURCE_DIR}/WebDriverConnection.h
+)

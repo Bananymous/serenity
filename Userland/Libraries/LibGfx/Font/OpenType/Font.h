@@ -36,11 +36,14 @@ struct FontOptions {
         // If set, do not try to read the 'name' table. family() and variant() will return empty strings.
         Name = 1 << 0,
 
-        // If set, tolerate a missing or broken 'hmtx' table. This will make glyph_metrics() return 0 for everyting and is_fixed_width() return true.
+        // If set, tolerate a missing or broken 'hmtx' table. This will make glyph_metrics() return 0 for everything and is_fixed_width() return true.
         Hmtx = 1 << 1,
 
         // If set, tolerate a missing or broken 'OS/2' table. metrics(), resolve_ascender_and_descender(), weight(), width(), and slope() will return different values.
         OS2 = 1 << 2,
+
+        // If set, do not try to read the 'kern' table. glyphs_horizontal_kerning() will return 0.
+        Kern = 1 << 3,
     };
     u32 skip_tables { 0 };
 };
@@ -62,6 +65,7 @@ public:
     virtual u32 glyph_count() const override;
     virtual u16 units_per_em() const override;
     virtual u32 glyph_id_for_code_point(u32 code_point) const override;
+    virtual Optional<u32> glyph_id_for_postscript_name(StringView) const override;
     virtual String family() const override;
     virtual String variant() const override;
     virtual u16 weight() const override;
@@ -122,6 +126,7 @@ private:
         Optional<OS2> os2,
         Optional<Kern>&& kern,
         Optional<Fpgm> fpgm,
+        Optional<Post> post,
         Optional<Prep> prep,
         Optional<CBLC> cblc,
         Optional<CBDT> cbdt,
@@ -137,6 +142,7 @@ private:
         , m_os2(move(os2))
         , m_kern(move(kern))
         , m_fpgm(move(fpgm))
+        , m_post(move(post))
         , m_prep(move(prep))
         , m_cblc(move(cblc))
         , m_cbdt(move(cbdt))
@@ -158,6 +164,7 @@ private:
     Optional<OS2> m_os2;
     Optional<Kern> m_kern;
     Optional<Fpgm> m_fpgm;
+    Optional<Post> m_post;
     Optional<Prep> m_prep;
     Optional<CBLC> m_cblc;
     Optional<CBDT> m_cbdt;

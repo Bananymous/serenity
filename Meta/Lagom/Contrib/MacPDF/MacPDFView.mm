@@ -42,13 +42,13 @@ static PDF::PDFErrorOr<NonnullRefPtr<Gfx::Bitmap>> render(PDF::Document& documen
 static NSBitmapImageRep* ns_from_gfx(NonnullRefPtr<Gfx::Bitmap> bitmap_p)
 {
     auto& bitmap = bitmap_p.leak_ref();
-    CGBitmapInfo info = kCGBitmapByteOrder32Little | (CGBitmapInfo)kCGImageAlphaFirst;
+    CGBitmapInfo info = (CGBitmapInfo)(kCGBitmapByteOrder32Little | (CGBitmapInfo)kCGImageAlphaFirst);
     auto data = CGDataProviderCreateWithData(
         &bitmap, bitmap.begin(), bitmap.size_in_bytes(),
         [](void* p, void const*, size_t) {
             (void)adopt_ref(*reinterpret_cast<Gfx::Bitmap*>(p));
         });
-    auto space = CGColorSpaceCreateDeviceRGB();
+    static auto space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     auto cgbmp = CGImageCreate(bitmap.width(), bitmap.height(), 8,
         32, bitmap.pitch(), space,
         info, data, nullptr, false, kCGRenderingIntentDefault);
@@ -169,16 +169,12 @@ static NSBitmapImageRep* ns_from_gfx(NonnullRefPtr<Gfx::Bitmap> bitmap_p)
         [item setState:_preferences.show_clipping_paths ? NSControlStateValueOn : NSControlStateValueOff];
         return _doc ? YES : NO;
     }
-    if ([item action] == @selector(toggleClipImages:)) {
-        [item setState:_preferences.clip_images ? NSControlStateValueOn : NSControlStateValueOff];
+    if ([item action] == @selector(toggleApplyClip:)) {
+        [item setState:_preferences.apply_clip ? NSControlStateValueOn : NSControlStateValueOff];
         return _doc ? YES : NO;
     }
-    if ([item action] == @selector(toggleClipPaths:)) {
-        [item setState:_preferences.clip_paths ? NSControlStateValueOn : NSControlStateValueOff];
-        return _doc ? YES : NO;
-    }
-    if ([item action] == @selector(toggleClipText:)) {
-        [item setState:_preferences.clip_text ? NSControlStateValueOn : NSControlStateValueOff];
+    if ([item action] == @selector(toggleUseConstantAlpha:)) {
+        [item setState:_preferences.use_constant_alpha ? NSControlStateValueOn : NSControlStateValueOff];
         return _doc ? YES : NO;
     }
     if ([item action] == @selector(toggleShowImages:)) {
@@ -200,26 +196,18 @@ static NSBitmapImageRep* ns_from_gfx(NonnullRefPtr<Gfx::Bitmap> bitmap_p)
     }
 }
 
-- (IBAction)toggleClipImages:(id)sender
+- (IBAction)toggleApplyClip:(id)sender
 {
     if (_doc) {
-        _preferences.clip_images = !_preferences.clip_images;
+        _preferences.apply_clip = !_preferences.apply_clip;
         [self invalidateCachedBitmap];
     }
 }
 
-- (IBAction)toggleClipPaths:(id)sender
+- (IBAction)toggleUseConstantAlpha:(id)sender
 {
     if (_doc) {
-        _preferences.clip_paths = !_preferences.clip_paths;
-        [self invalidateCachedBitmap];
-    }
-}
-
-- (IBAction)toggleClipText:(id)sender
-{
-    if (_doc) {
-        _preferences.clip_text = !_preferences.clip_text;
+        _preferences.use_constant_alpha = !_preferences.use_constant_alpha;
         [self invalidateCachedBitmap];
     }
 }

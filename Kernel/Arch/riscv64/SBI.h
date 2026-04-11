@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2023, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -14,6 +14,9 @@
 // RISC-V Supervisor Binary Interface Specification (https://github.com/riscv-non-isa/riscv-sbi-doc)
 
 namespace Kernel::SBI {
+
+// Returns true if the SBI version is 0.1.
+bool is_legacy();
 
 // Chapter 3. Binary Encoding
 enum class SBIError : long {

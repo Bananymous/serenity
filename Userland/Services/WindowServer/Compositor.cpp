@@ -41,6 +41,8 @@ static WallpaperMode mode_to_enum(ByteString const& name)
         return WallpaperMode::Stretch;
     if (name == "Center")
         return WallpaperMode::Center;
+    if (name == "Fill")
+        return WallpaperMode::Fill;
     return WallpaperMode::Center;
 }
 
@@ -308,23 +310,20 @@ void Compositor::compose()
         check_restore_cursor_back(cursor_screen, cursor_rect);
 
     auto paint_wallpaper = [&](Screen& screen, Gfx::Painter& painter, Gfx::IntRect const& rect, Gfx::IntRect const& screen_rect) {
+        // FIXME: If the wallpaper is opaque and covers the whole rect, no need to fill with color!
+        painter.fill_rect(rect, background_color);
         if (m_wallpaper) {
             if (m_wallpaper_mode == WallpaperMode::Center) {
                 Gfx::IntPoint offset { (screen.width() - m_wallpaper->width()) / 2, (screen.height() - m_wallpaper->height()) / 2 };
-
-                // FIXME: If the wallpaper is opaque and covers the whole rect, no need to fill with color!
-                painter.fill_rect(rect, background_color);
                 painter.blit_offset(rect.location(), *m_wallpaper, rect.translated(-screen_rect.location()), offset);
             } else if (m_wallpaper_mode == WallpaperMode::Tile) {
                 painter.draw_tiled_bitmap(rect, *m_wallpaper);
-            } else if (m_wallpaper_mode == WallpaperMode::Stretch) {
+            } else if (m_wallpaper_mode == WallpaperMode::Stretch || m_wallpaper_mode == WallpaperMode::Fill) {
                 VERIFY(screen.compositor_screen_data().m_wallpaper_bitmap);
                 painter.blit(rect.location(), *screen.compositor_screen_data().m_wallpaper_bitmap, rect.translated(-screen.location()));
             } else {
                 VERIFY_NOT_REACHED();
             }
-        } else {
-            painter.fill_rect(rect, background_color);
         }
     };
 
@@ -823,7 +822,7 @@ void Compositor::update_wallpaper_bitmap()
 {
     Screen::for_each([&](Screen& screen) {
         auto& screen_data = screen.compositor_screen_data();
-        if (m_wallpaper_mode != WallpaperMode::Stretch || !m_wallpaper) {
+        if ((m_wallpaper_mode != WallpaperMode::Stretch && m_wallpaper_mode != WallpaperMode::Fill) || !m_wallpaper) {
             screen_data.clear_wallpaper_bitmap();
             return IterationDecision::Continue;
         }
@@ -859,7 +858,18 @@ void Compositor::update_wallpaper_bitmap()
             auto bitmap = Gfx::Bitmap::create(Gfx::BitmapFormat::BGRx8888, screen.size(), screen.scale_factor()).release_value_but_fixme_should_propagate_errors();
 
             Gfx::Painter painter(*bitmap);
-            painter.draw_scaled_bitmap(bitmap->rect(), *m_wallpaper, m_wallpaper->rect(), 1.f, Gfx::ScalingMode::BilinearBlend);
+
+            if (m_wallpaper_mode == WallpaperMode::Stretch)
+                painter.draw_scaled_bitmap(bitmap->rect(), *m_wallpaper, m_wallpaper->rect(), 1.f, Gfx::ScalingMode::BilinearBlend);
+
+            if (m_wallpaper_mode == WallpaperMode::Fill) {
+                auto wallpaper_rect = m_wallpaper->rect();
+                auto scale_x = static_cast<float>(screen.width()) / wallpaper_rect.width();
+                auto scale_y = static_cast<float>(screen.height()) / wallpaper_rect.height();
+                auto new_size = (wallpaper_rect.size().to_type<float>() * max(scale_x, scale_y)).to_type<int>();
+                auto stretched_rect = Gfx::IntRect({}, new_size).centered_within(screen.rect());
+                painter.draw_scaled_bitmap(stretched_rect, *m_wallpaper, wallpaper_rect, 1.0f, Gfx::ScalingMode::BilinearBlend);
+            }
 
             screen_data.m_wallpaper_bitmap = move(bitmap);
         }

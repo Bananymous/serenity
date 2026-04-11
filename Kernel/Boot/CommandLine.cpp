@@ -36,7 +36,6 @@ UNMAP_AFTER_INIT void CommandLine::initialize()
 {
     VERIFY(!s_the);
     s_the = new CommandLine({ s_cmd_line, strlen(s_cmd_line) });
-    dmesgln("Kernel Commandline: {}", kernel_command_line().string());
     // Validate the modes the user passed in.
     (void)s_the->panic_mode(Validate::Yes);
 }
@@ -200,6 +199,11 @@ bool CommandLine::is_nvme_polling_enabled() const
     return contains("nvme_poll"sv);
 }
 
+bool CommandLine::is_xhci_polling_enabled() const
+{
+    return contains("xhci_poll"sv);
+}
+
 UNMAP_AFTER_INIT AcpiFeatureLevel CommandLine::acpi_feature_level() const
 {
     auto value = kernel_command_line().lookup("acpi"sv).value_or("limited"sv);
@@ -310,7 +314,7 @@ Vector<NonnullOwnPtr<KString>> CommandLine::userspace_init_args() const
     if (!init_args.is_empty())
         MUST(args.try_prepend(MUST(KString::try_create(userspace_init()))));
     for (auto& init_arg : init_args)
-        args.append(MUST(KString::try_create(init_arg)));
+        MUST(args.try_append(MUST(KString::try_create(init_arg))));
     return args;
 }
 

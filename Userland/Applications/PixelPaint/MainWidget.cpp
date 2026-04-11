@@ -15,6 +15,7 @@
 #include "FilterParams.h"
 #include "ImageMasking.h"
 #include "LevelsDialog.h"
+#include "ModeBilevelDialog.h"
 #include "ResizeImageDialog.h"
 #include <AK/String.h>
 #include <Applications/PixelPaint/PixelPaintWindowGML.h>
@@ -616,6 +617,23 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
     });
 
     m_image_menu = window.add_menu("&Image"_string);
+    auto mode_submenu = m_image_menu->add_submenu("&Mode"_string);
+    mode_submenu->add_action(GUI::Action::create(
+        "&Bilevel...", [&](auto&) {
+            auto* editor = current_image_editor();
+            VERIFY(editor);
+            auto dialog = PixelPaint::ModeBilevelDialog::construct(&window);
+            if (dialog->exec() == GUI::Dialog::ExecResult::OK) {
+                auto image_resize_or_error = editor->image().convert_to_bilevel(dialog->dithering_algorithm());
+                if (image_resize_or_error.is_error()) {
+                    GUI::MessageBox::show_error(&window, MUST(String::formatted("Failed to convert to bilevel: {}", image_resize_or_error.release_error())));
+                    return;
+                }
+                editor->did_complete_action("Convert to Bilevel"sv);
+            }
+        }));
+    m_image_menu->add_separator();
+
     m_image_menu->add_action(GUI::Action::create(
         "Flip Image &Vertically", g_icon_bag.edit_flip_vertical, [&](auto&) {
             auto* editor = current_image_editor();
@@ -716,6 +734,18 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
             }
             editor->did_complete_action("Crop Image to Content"sv);
         }));
+
+    m_image_menu->add_separator();
+
+    m_levels_dialog_action = GUI::Action::create(
+        "Change &Levels...", { Mod_Ctrl, Key_L }, g_icon_bag.levels, [&](auto&) {
+            auto* editor = current_image_editor();
+            VERIFY(editor);
+            auto dialog = PixelPaint::LevelsDialog::construct(&window, editor);
+            if (dialog->exec() != GUI::Dialog::ExecResult::OK)
+                dialog->revert_possible_changes();
+        });
+    m_image_menu->add_action(*m_levels_dialog_action);
 
     m_layer_menu = window.add_menu("&Layer"_string);
 
@@ -1174,15 +1204,6 @@ ErrorOr<void> MainWidget::initialize_menubar(GUI::Window& window)
         Desktop::Launcher::open(URL::create_with_file_scheme("/usr/share/man/man1/Applications/PixelPaint.md"), "/bin/Help");
     }));
     help_menu->add_action(GUI::CommonActions::make_about_action("Pixel Paint"_string, GUI::Icon::default_icon("app-pixel-paint"sv), &window));
-
-    m_levels_dialog_action = GUI::Action::create(
-        "Change &Levels...", { Mod_Ctrl, Key_L }, g_icon_bag.levels, [&](auto&) {
-            auto* editor = current_image_editor();
-            VERIFY(editor);
-            auto dialog = PixelPaint::LevelsDialog::construct(&window, editor);
-            if (dialog->exec() != GUI::Dialog::ExecResult::OK)
-                dialog->revert_possible_changes();
-        });
 
     auto& toolbar = *find_descendant_of_type_named<GUI::Toolbar>("toolbar");
     toolbar.add_action(*m_new_image_action);

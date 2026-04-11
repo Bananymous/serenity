@@ -27,16 +27,12 @@ ErrorOr<NonnullRefPtr<MonitorWidget>> MonitorWidget::try_create()
     return monitor_widget;
 }
 
-bool MonitorWidget::set_wallpaper(String path)
+void MonitorWidget::load_wallpaper(ByteString path)
 {
-    if (!is_different_to_current_wallpaper_path(path))
-        return false;
-
     (void)Threading::BackgroundAction<NonnullRefPtr<Gfx::Bitmap>>::construct(
-        [path](auto&) -> ErrorOr<NonnullRefPtr<Gfx::Bitmap>> {
-            if (path.is_empty())
-                return Error::from_errno(ENOENT);
-            return Gfx::Bitmap::load_from_file(path);
+        [path, this](auto&) -> ErrorOr<NonnullRefPtr<Gfx::Bitmap>> {
+            constexpr auto scale_factor = 1;
+            return Gfx::Bitmap::load_from_file(path, scale_factor, m_monitor_rect.size());
         },
 
         [this, path](NonnullRefPtr<Gfx::Bitmap> bitmap) -> ErrorOr<void> {
@@ -52,19 +48,28 @@ bool MonitorWidget::set_wallpaper(String path)
         [this, path](Error) -> void {
             m_wallpaper_bitmap = nullptr;
         });
+}
 
-    if (path.is_empty())
+bool MonitorWidget::set_wallpaper(ByteString path)
+{
+    if (!is_different_to_current_wallpaper_path(path))
+        return false;
+    if (path.is_empty()) {
+        m_wallpaper_bitmap = nullptr;
         m_desktop_wallpaper_path = OptionalNone();
-    else
+        m_desktop_dirty = true;
+        update();
+    } else {
+        load_wallpaper(path);
         m_desktop_wallpaper_path = path;
-
+    }
     return true;
 }
 
 Optional<StringView> MonitorWidget::wallpaper() const
 {
     if (m_desktop_wallpaper_path.has_value())
-        return m_desktop_wallpaper_path->bytes_as_string_view();
+        return m_desktop_wallpaper_path->view();
     return OptionalNone();
 }
 
@@ -141,6 +146,13 @@ void MonitorWidget::redraw_desktop_if_needed()
         painter.draw_tiled_bitmap(m_desktop_bitmap->rect(), *scaled_bitmap);
     } else if (m_desktop_wallpaper_mode == "Stretch"sv) {
         painter.draw_scaled_bitmap(m_desktop_bitmap->rect(), *m_wallpaper_bitmap, m_wallpaper_bitmap->rect(), 1.f, Gfx::ScalingMode::BilinearBlend);
+    } else if (m_desktop_wallpaper_mode == "Fill"sv) {
+        auto wallpaper_rect = m_wallpaper_bitmap->rect();
+        auto scale_x = static_cast<float>(m_desktop_bitmap->width()) / wallpaper_rect.width();
+        auto scale_y = static_cast<float>(m_desktop_bitmap->height()) / wallpaper_rect.height();
+        auto new_size = (wallpaper_rect.size().to_type<float>() * max(scale_x, scale_y)).to_type<int>();
+        auto stretched_rect = Gfx::IntRect({}, new_size).centered_within(m_desktop_bitmap->rect());
+        painter.draw_scaled_bitmap(stretched_rect, *m_wallpaper_bitmap, wallpaper_rect, 1.0f, Gfx::ScalingMode::BilinearBlend);
     } else {
         VERIFY_NOT_REACHED();
     }

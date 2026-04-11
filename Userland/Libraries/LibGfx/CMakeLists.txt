@@ -39,11 +39,14 @@ set(SOURCES
     ICC/TagTypes.cpp
     ICC/WellKnownProfiles.cpp
     ImageFormats/AnimationWriter.cpp
+    ImageFormats/BilevelImage.cpp
     ImageFormats/BMPLoader.cpp
     ImageFormats/BMPWriter.cpp
     ImageFormats/BooleanDecoder.cpp
+    ImageFormats/CCITTEncoder.cpp
     ImageFormats/CCITTDecoder.cpp
     ImageFormats/DDSLoader.cpp
+    ImageFormats/DICOMLoader.cpp
     ImageFormats/GIFLoader.cpp
     ImageFormats/GIFWriter.cpp
     ImageFormats/ICOLoader.cpp
@@ -54,14 +57,20 @@ set(SOURCES
     ImageFormats/ISOBMFF/JPEGXLBoxes.cpp
     ImageFormats/ISOBMFF/Reader.cpp
     ImageFormats/JBIG2Loader.cpp
+    ImageFormats/JBIG2Shared.cpp
+    ImageFormats/JBIG2Writer.cpp
     ImageFormats/JPEG2000Loader.cpp
     ImageFormats/JPEG2000ProgressionIterators.cpp
     ImageFormats/JPEG2000TagTree.cpp
     ImageFormats/JPEGLoader.cpp
-    ImageFormats/JPEGXLEntropyDecoder.cpp
-    ImageFormats/JPEGXLICC.cpp
+    ImageFormats/JPEGXL/DCTNaturalOrder.cpp
+    ImageFormats/JPEGXL/EntropyDecoder.cpp
+    ImageFormats/JPEGXL/ICC.cpp
+    ImageFormats/JPEGXL/ModularTransforms.cpp
+    ImageFormats/JPEGXL/SelfCorrectingPredictor.cpp
     ImageFormats/JPEGXLLoader.cpp
     ImageFormats/JPEGWriter.cpp
+    ImageFormats/MQArithmeticCoder.cpp
     ImageFormats/PBMLoader.cpp
     ImageFormats/PGMLoader.cpp
     ImageFormats/PNGLoader.cpp
@@ -69,11 +78,11 @@ set(SOURCES
     ImageFormats/PortableFormatWriter.cpp
     ImageFormats/PAMLoader.cpp
     ImageFormats/PPMLoader.cpp
-    ImageFormats/QMArithmeticDecoder.cpp
     ImageFormats/QOILoader.cpp
     ImageFormats/QOIWriter.cpp
     ImageFormats/TGALoader.cpp
     ImageFormats/TIFFLoader.cpp
+    ImageFormats/TIFFWriter.cpp
     ImageFormats/TinyVGLoader.cpp
     ImageFormats/WebPLoader.cpp
     ImageFormats/WebPLoaderLossless.cpp

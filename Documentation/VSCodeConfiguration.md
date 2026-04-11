@@ -48,12 +48,12 @@ following `c_cpp_properties.json` to circumvent some errors. Even with the confi
                 "${workspaceFolder}/Userland/Libraries",
                 "${workspaceFolder}/Userland/Libraries/LibC",
                 "${workspaceFolder}/Userland/Services",
-                "${workspaceFolder}/Toolchain/Local/x86_64/x86_64-pc-serenity/include/c++/**"
+                "${workspaceFolder}/Toolchain/Local/x86_64/x86_64-serenity/include/c++/**"
             ],
             "defines": ["DEBUG", "__serenity__"],
-            "compilerPath": "${workspaceFolder}/Toolchain/Local/x86_64/bin/x86_64-pc-serenity-g++",
+            "compilerPath": "${workspaceFolder}/Toolchain/Local/x86_64/bin/x86_64-serenity-g++",
             "cStandard": "c17",
-            "cppStandard": "c++23",
+            "cppStandard": "c++26",
             "intelliSenseMode": "linux-gcc-x86",
             "compileCommands": "Build/x86_64/compile_commands.json",
             "compilerArgs": ["-Wall", "-Wextra", "-Werror"],
@@ -70,7 +70,7 @@ following `c_cpp_properties.json` to circumvent some errors. Even with the confi
                     "${workspaceFolder}/Userland/Libraries",
                     "${workspaceFolder}/Userland/Libraries/LibC",
                     "${workspaceFolder}/Userland/Services",
-                    "${workspaceFolder}/Toolchain/Local/x86_64/x86_64-pc-serenity/include/c++/**"
+                    "${workspaceFolder}/Toolchain/Local/x86_64/x86_64-serenity/include/c++/**"
                 ],
                 "limitSymbolsToIncludedHeaders": true,
                 "databaseFilename": "${workspaceFolder}/Build/x86_64/"

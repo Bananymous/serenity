@@ -1,6 +1,6 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='SDL2_image'
-version='2.6.3'
+version='2.8.8'
 useconfigure='true'
 depends=(
     'libjpeg'
@@ -9,11 +9,11 @@ depends=(
     'SDL2'
 )
 files=(
-    "https://github.com/libsdl-org/SDL_image/releases/download/release-${version}/SDL2_image-${version}.tar.gz#931c9be5bf1d7c8fae9b7dc157828b7eee874e23c7f24b44ba7eff6b4836312c"
+    "https://github.com/libsdl-org/SDL_image/releases/download/release-${version}/SDL2_image-${version}.tar.gz#2213b56fdaff2220d0e38c8e420cbe1a83c87374190cba8c70af2156097ce30a"
 )
 configure() {
     run ./configure \
-        --host="${SERENITY_ARCH}-pc-serenity" \
+        --host="${SERENITY_ARCH}-serenity" \
         --with-sdl-prefix="${SERENITY_INSTALL_ROOT}/usr/local" \
         --enable-webp='false' \
         --enable-webp-shared='false' \

@@ -15,11 +15,13 @@
 
 #include <AK/Function.h>
 #include <AK/Vector.h>
+#include <LibFileSystem/FileSystem.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <syscall.h>
 #include <unistd.h>
 
 struct posix_spawn_file_actions_state {
@@ -98,9 +100,60 @@ extern "C" {
     _exit(127);
 }
 
+static ErrorOr<pid_t> posix_spawn_syscall(char const* path, char* const argv[], char* const envp[])
+{
+    if (!path || !argv || !argv[0])
+        return EINVAL;
+
+    Syscall::SC_posix_spawn_params posix_spawn_params;
+
+    posix_spawn_params.path.characters = path;
+    posix_spawn_params.path.length = strlen(path);
+
+    Vector<Syscall::StringArgument, 32> argv_string_args;
+    for (size_t argc = 0; argv[argc] != nullptr; ++argc)
+        TRY(argv_string_args.try_append({ argv[argc], strlen(argv[argc]) }));
+
+    posix_spawn_params.arguments.strings = argv_string_args.is_empty() ? nullptr : argv_string_args.data();
+    posix_spawn_params.arguments.length = argv_string_args.size();
+
+    Vector<Syscall::StringArgument, 32> envp_string_args;
+    if (envp) {
+        for (size_t envc = 0; envp[envc] != nullptr; ++envc)
+            TRY(envp_string_args.try_append({ envp[envc], strlen(envp[envc]) }));
+    }
+
+    posix_spawn_params.environment.strings = envp_string_args.is_empty() ? nullptr : envp_string_args.data();
+    posix_spawn_params.environment.length = envp_string_args.size();
+
+    posix_spawn_params.attr_data = nullptr;
+    posix_spawn_params.attr_data_size = 0;
+
+    posix_spawn_params.serialized_file_actions_data = nullptr;
+    posix_spawn_params.serialized_file_actions_data_size = 0;
+
+    pid_t rc = syscall(SC_posix_spawn, &posix_spawn_params);
+
+    if (rc < 0)
+        return Error::from_syscall("posix_spawn"sv, rc);
+
+    return rc;
+}
+
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/posix_spawn.html
 int posix_spawn(pid_t* out_pid, char const* path, posix_spawn_file_actions_t const* file_actions, posix_spawnattr_t const* attr, char* const argv[], char* const envp[])
 {
+    // FIXME: Support file_actions and spawnattr in the posix_spawn syscall.
+    if ((!file_actions || file_actions->state->actions.is_empty()) && !attr) {
+        auto child_pid_or_error = posix_spawn_syscall(path, argv, envp);
+        if (child_pid_or_error.is_error())
+            return child_pid_or_error.error().code();
+
+        if (out_pid)
+            *out_pid = child_pid_or_error.value();
+        return 0;
+    }
+
     pid_t child_pid = fork();
     if (child_pid < 0)
         return errno;
@@ -116,6 +169,30 @@ int posix_spawn(pid_t* out_pid, char const* path, posix_spawn_file_actions_t con
 // https://pubs.opengroup.org/onlinepubs/9699919799/functions/posix_spawnp.html
 int posix_spawnp(pid_t* out_pid, char const* file, posix_spawn_file_actions_t const* file_actions, posix_spawnattr_t const* attr, char* const argv[], char* const envp[])
 {
+    if (strchr(file, '/') != nullptr)
+        return posix_spawn(out_pid, file, file_actions, attr, argv, envp);
+
+    if ((!file_actions || file_actions->state->actions.is_empty()) && !attr) {
+        // FIXME: This is currently not OOM-safe because ByteString does not handle OOMs!
+
+        ByteString path = getenv("PATH");
+        if (path.is_empty())
+            path = DEFAULT_PATH;
+
+        int rc = ENOENT;
+
+        path.view().for_each_split_view(":"sv, SplitBehavior::Nothing, [out_pid, file, file_actions, attr, argv, envp, &rc](auto const directory) -> IterationDecision {
+            auto absolute_path = ByteString::formatted("{}/{}", directory, file);
+
+            rc = posix_spawn(out_pid, absolute_path.characters(), file_actions, attr, argv, envp);
+            if (rc == ENOENT)
+                return IterationDecision::Continue;
+            return IterationDecision::Break;
+        });
+
+        return rc;
+    }
+
     pid_t child_pid = fork();
     if (child_pid < 0)
         return errno;

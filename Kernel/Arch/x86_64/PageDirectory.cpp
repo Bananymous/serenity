@@ -19,7 +19,7 @@
 namespace Kernel::Memory {
 
 struct CR3Map {
-    SpinlockProtected<IntrusiveRedBlackTree<&PageDirectory::m_tree_node>, LockRank::None> map {};
+    RecursiveSpinlockProtected<IntrusiveRedBlackTree<&PageDirectory::m_tree_node>, LockRank::None> map {};
 };
 
 static Singleton<CR3Map> s_cr3_map;
@@ -137,10 +137,10 @@ UNMAP_AFTER_INIT void PageDirectory::allocate_kernel_directory()
     m_directory_table = PhysicalRAMPage::create(g_boot_info.boot_pdpt, MayReturnToFreeList::No);
     m_directory_pages[(g_boot_info.kernel_mapping_base >> 30) & 0x1ff] = PhysicalRAMPage::create(g_boot_info.boot_pd_kernel, MayReturnToFreeList::No);
 
-    if (g_boot_info.boot_method == BootMethod::Multiboot1) {
-        dmesgln("MM: boot_pd0 @ {}", g_boot_info.boot_method_specific.multiboot1.boot_pd0);
-        m_directory_pages[0] = PhysicalRAMPage::create(g_boot_info.boot_method_specific.multiboot1.boot_pd0, MayReturnToFreeList::No);
-    } else if (g_boot_info.boot_method == BootMethod::EFI) {
+    dmesgln("MM: boot_pd0 @ {}", g_boot_info.arch_specific.boot_pd0);
+    m_directory_pages[0] = PhysicalRAMPage::create(g_boot_info.arch_specific.boot_pd0, MayReturnToFreeList::No);
+
+    if (g_boot_info.boot_method == BootMethod::EFI) {
         dmesgln("MM: bootstrap_page_page_directory @ {}", g_boot_info.boot_method_specific.efi.bootstrap_page_page_directory_paddr);
         m_directory_pages[(g_boot_info.boot_method_specific.efi.bootstrap_page_vaddr.get() >> 30) & 0x1ff] = PhysicalRAMPage::create(g_boot_info.boot_method_specific.efi.bootstrap_page_page_directory_paddr, MayReturnToFreeList::No);
     }

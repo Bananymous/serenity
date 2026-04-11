@@ -5,6 +5,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/Bus/PCI/Driver.h>
+#include <Kernel/Bus/PCI/IDs.h>
 #include <Kernel/Bus/VirtIO/Transport/PCIe/TransportLink.h>
 #include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/Serial/VirtIO/Console.h>
@@ -15,10 +17,10 @@ namespace Kernel::VirtIO {
 
 unsigned Console::next_device_id = 0;
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<Console> Console::must_create_for_pci_instance(PCI::DeviceIdentifier const& pci_device_identifier)
+UNMAP_AFTER_INIT ErrorOr<NonnullRefPtr<Console>> Console::create_for_pci_instance(PCI::DeviceIdentifier const& pci_device_identifier)
 {
-    auto pci_transport_link = MUST(PCIeTransportLink::create(pci_device_identifier));
-    return adopt_lock_ref_if_nonnull(new (nothrow) Console(move(pci_transport_link))).release_nonnull();
+    auto pci_transport_link = TRY(PCIeTransportLink::create(pci_device_identifier));
+    return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Console(move(pci_transport_link))));
 }
 
 UNMAP_AFTER_INIT ErrorOr<void> Console::initialize_virtio_resources()
@@ -42,7 +44,7 @@ UNMAP_AFTER_INIT ErrorOr<void> Console::initialize_virtio_resources()
         }
         if (is_feature_accepted(VIRTIO_CONSOLE_F_MULTIPORT)) {
             max_nr_ports = transport_entity().config_read32(*cfg, 0x4);
-            m_ports.resize(max_nr_ports);
+            m_ports.try_resize(max_nr_ports).release_value_but_fixme_should_propagate_errors();
         }
     });
     dbgln("VirtIO::Console: cols: {}, rows: {}, max nr ports {}", cols, rows, max_nr_ports);
@@ -55,7 +57,7 @@ UNMAP_AFTER_INIT ErrorOr<void> Console::initialize_virtio_resources()
     } else {
         auto port = TRY(VirtIO::ConsolePort::create(0u, *this));
         port->init_receive_buffer({});
-        m_ports.append(port);
+        TRY(m_ports.try_append(port));
     }
     return {};
 }
@@ -236,4 +238,21 @@ void Console::send_open_control_message(unsigned port_number, bool open)
     };
     write_control_message(port_open);
 }
+
+PCI_DRIVER(VirtIOConsoleDriver);
+
+ErrorOr<void> VirtIOConsoleDriver::probe(PCI::DeviceIdentifier const& pci_device_identifier) const
+{
+    if (pci_device_identifier.hardware_id().vendor_id != PCI::VendorID::VirtIO
+        || pci_device_identifier.hardware_id().device_id != PCI::DeviceID::VirtIOConsole)
+        return ENOTSUP;
+
+    auto console = TRY(Console::create_for_pci_instance(pci_device_identifier));
+    TRY(console->initialize_virtio_resources());
+
+    (void)console.leak_ref();
+
+    return {};
+}
+
 }

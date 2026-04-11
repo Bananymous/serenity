@@ -2,6 +2,8 @@ set(TEST_SOURCES
     BenchmarkGfxPainter.cpp
     BenchmarkJPEGLoader.cpp
     BenchmarkPNG.cpp
+    TestBilevelImage.cpp
+    TestCCITT.cpp
     TestColor.cpp
     TestDeltaE.cpp
     TestFontHandling.cpp

@@ -25,11 +25,8 @@
 
 namespace EDID {
 
-// clang doesn't like passing around pointers to members in packed structures,
-// even though we're only using them for arithmetic purposes
-#if defined(AK_COMPILER_CLANG)
-#    pragma clang diagnostic ignored "-Waddress-of-packed-member"
-#endif
+// We're only passing around pointers to members in packed structures for arithmetic purposes.
+#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
 
 static_assert(sizeof(Definitions::EDID) == Parser::BufferSize);
 
@@ -1054,7 +1051,11 @@ auto Parser::supported_resolutions() const -> ErrorOr<Vector<SupportedResolution
             return info.width == width && info.height == height;
         });
         if (it == resolutions.end()) {
-            resolutions.append({ width, height, { { refresh_rate, preferred } } });
+            auto resolution = SupportedResolution { width, height, {} };
+            static_assert(decltype(SupportedResolution::refresh_rates)::InlineCapacity >= 1);
+            resolution.refresh_rates.unchecked_append({ refresh_rate, preferred });
+
+            resolutions.try_append(move(resolution)).release_value_but_fixme_should_propagate_errors();
         } else {
             auto& info = *it;
             SupportedResolution::RefreshRate* found_refresh_rate = nullptr;
@@ -1067,7 +1068,7 @@ auto Parser::supported_resolutions() const -> ErrorOr<Vector<SupportedResolution
             if (found_refresh_rate)
                 found_refresh_rate->preferred |= preferred;
             else
-                info.refresh_rates.append({ refresh_rate, preferred });
+                info.refresh_rates.try_append({ refresh_rate, preferred }).release_value_but_fixme_should_propagate_errors();
         }
     };
 

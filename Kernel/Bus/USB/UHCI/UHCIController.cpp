@@ -8,8 +8,11 @@
 #include <AK/Find.h>
 #include <AK/Platform.h>
 #include <Kernel/Arch/Delay.h>
+#include <Kernel/Boot/CommandLine.h>
 #include <Kernel/Bus/PCI/API.h>
+#include <Kernel/Bus/PCI/Driver.h>
 #include <Kernel/Bus/USB/UHCI/UHCIController.h>
+#include <Kernel/Bus/USB/USBManagement.h>
 #include <Kernel/Bus/USB/USBRequest.h>
 #include <Kernel/Debug.h>
 #include <Kernel/Library/StdLib.h>
@@ -80,7 +83,6 @@ ErrorOr<void> UHCIController::initialize()
     dmesgln_pci(*this, "Interrupt line: {}", interrupt_number());
 
     TRY(spawn_async_poll_process());
-    TRY(spawn_port_process());
 
     TRY(reset());
     return start();
@@ -150,7 +152,7 @@ UNMAP_AFTER_INIT ErrorOr<void> UHCIController::create_structures()
     m_isochronous_transfer_pool = TRY(MM.allocate_dma_buffer_page("UHCI Isochronous Descriptor Pool"sv, Memory::Region::Access::ReadWrite, Memory::MemoryType::IO));
 
     // Set up the Isochronous Transfer Descriptor list
-    m_iso_td_list.resize(UHCI_NUMBER_OF_ISOCHRONOUS_TDS);
+    TRY(m_iso_td_list.try_resize(UHCI_NUMBER_OF_ISOCHRONOUS_TDS));
     for (size_t i = 0; i < m_iso_td_list.size(); i++) {
         auto placement_addr = reinterpret_cast<void*>(m_isochronous_transfer_pool->vaddr().get() + (i * sizeof(Kernel::USB::TransferDescriptor)));
         auto paddr = static_cast<u32>(m_isochronous_transfer_pool->physical_page(0)->paddr().get() + (i * sizeof(Kernel::USB::TransferDescriptor)));
@@ -267,6 +269,7 @@ ErrorOr<void> UHCIController::start()
 
     m_root_hub = TRY(UHCIRootHub::try_create(*this));
     TRY(m_root_hub->setup({}));
+    TRY(spawn_port_process());
     return {};
 }
 
@@ -302,7 +305,11 @@ ErrorOr<void> UHCIController::initialize_device(USB::Device& device)
     }
 
     // Ensure that this is actually a valid device descriptor...
-    VERIFY(dev_descriptor.descriptor_header.descriptor_type == DESCRIPTOR_TYPE_DEVICE);
+    if (dev_descriptor.descriptor_header.descriptor_type != DESCRIPTOR_TYPE_DEVICE) {
+        dmesgln("USB Device returned incorrect descriptor type for GetDescriptor(Device) request - Expected {:#x} but got {:#x}", DESCRIPTOR_TYPE_DEVICE, dev_descriptor.descriptor_header.descriptor_type);
+        return EIO;
+    }
+
     device.set_max_packet_size<UHCIController>({}, dev_descriptor.max_packet_size);
 
     transfer_length = TRY(device.control_transfer(USB_REQUEST_TRANSFER_DIRECTION_DEVICE_TO_HOST, USB_REQUEST_GET_DESCRIPTOR, (DESCRIPTOR_TYPE_DEVICE << 8), 0, sizeof(USBDeviceDescriptor), &dev_descriptor));
@@ -314,7 +321,10 @@ ErrorOr<void> UHCIController::initialize_device(USB::Device& device)
     }
 
     // Ensure that this is actually a valid device descriptor...
-    VERIFY(dev_descriptor.descriptor_header.descriptor_type == DESCRIPTOR_TYPE_DEVICE);
+    if (dev_descriptor.descriptor_header.descriptor_type != DESCRIPTOR_TYPE_DEVICE) {
+        dmesgln("USB Device returned incorrect descriptor type for GetDescriptor(Device) request - Expected {:#x} but got {:#x}", DESCRIPTOR_TYPE_DEVICE, dev_descriptor.descriptor_header.descriptor_type);
+        return EIO;
+    }
 
     if constexpr (UHCI_DEBUG) {
         dbgln("USB Device Descriptor for {:04x}:{:04x}", dev_descriptor.vendor_id, dev_descriptor.product_id);
@@ -340,7 +350,7 @@ ErrorOr<void> UHCIController::initialize_device(USB::Device& device)
 
     // Fetch the configuration descriptors from the device
     auto& configurations = device.configurations<UHCIController>({});
-    configurations.ensure_capacity(dev_descriptor.num_configurations);
+    TRY(configurations.try_ensure_capacity(dev_descriptor.num_configurations));
     for (u8 configuration = 0u; configuration < dev_descriptor.num_configurations; configuration++) {
         USBConfigurationDescriptor configuration_descriptor;
         transfer_length = TRY(device.control_transfer(USB_REQUEST_TRANSFER_DIRECTION_DEVICE_TO_HOST, USB_REQUEST_GET_DESCRIPTOR, (DESCRIPTOR_TYPE_CONFIGURATION << 8u) | configuration, 0, sizeof(USBConfigurationDescriptor), &configuration_descriptor));
@@ -685,9 +695,7 @@ ErrorOr<void> UHCIController::spawn_port_process()
 {
     TRY(Process::create_kernel_process("UHCI Hot Plug Task"sv, [&] {
         while (!Process::current().is_dying()) {
-            if (m_root_hub)
-                m_root_hub->check_for_port_updates();
-
+            m_root_hub->check_for_port_updates();
             (void)Thread::current()->sleep(Duration::from_seconds(1));
         }
         Process::current().sys$exit(0);
@@ -908,6 +916,23 @@ ErrorOr<void> UHCIController::clear_port_feature(Badge<UHCIRootHub>, u8 port, Hu
     else
         write_portsc2(port_data);
 
+    return {};
+}
+
+PCI_DRIVER(UHCIDriver);
+
+ErrorOr<void> UHCIDriver::probe(PCI::DeviceIdentifier const& pci_device_identifier) const
+{
+    if (kernel_command_line().disable_usb() || kernel_command_line().disable_uhci_controller())
+        return EPERM;
+
+    if (pci_device_identifier.class_code() != PCI::ClassID::SerialBus
+        || pci_device_identifier.subclass_code() != PCI::SerialBus::SubclassID::USB
+        || pci_device_identifier.prog_if() != PCI::SerialBus::USBProgIf::UHCI)
+        return ENOTSUP;
+
+    auto controller = TRY(UHCIController::try_to_initialize(pci_device_identifier));
+    USB::USBManagement::the().add_controller(controller);
     return {};
 }
 

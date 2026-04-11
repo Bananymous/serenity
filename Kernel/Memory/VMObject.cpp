@@ -10,9 +10,9 @@
 
 namespace Kernel::Memory {
 
-static Singleton<SpinlockProtected<VMObject::AllInstancesList, LockRank::None>> s_all_instances;
+static Singleton<RecursiveSpinlockProtected<VMObject::AllInstancesList, LockRank::None>> s_all_instances;
 
-SpinlockProtected<VMObject::AllInstancesList, LockRank::None>& VMObject::all_instances()
+RecursiveSpinlockProtected<VMObject::AllInstancesList, LockRank::None>& VMObject::all_instances()
 {
     return s_all_instances;
 }
@@ -38,17 +38,25 @@ VMObject::~VMObject()
     VERIFY(m_regions.is_empty());
 }
 
+void VMObject::remap_regions_locked()
+{
+    VERIFY(m_lock.is_locked());
+    for (auto& region : m_regions) {
+        region.remap_with_locked_vmobject();
+    }
+}
+
 void VMObject::remap_regions()
 {
-    for_each_region([](Region& region) {
-        region.remap();
-    });
+    SpinlockLocker lock(m_lock);
+    remap_regions_locked();
 }
 
 bool VMObject::remap_regions_one_page(size_t page_index, NonnullRefPtr<PhysicalRAMPage> page)
 {
+    VERIFY(m_lock.is_locked());
     bool success = true;
-    for_each_region([&](Region& region) {
+    for_each_region_locked([&](Region& region) {
         if (!region.remap_vmobject_page(page_index, *page))
             success = false;
     });

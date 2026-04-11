@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2023, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -17,7 +17,7 @@
 namespace Kernel::Memory {
 
 struct SATPMap {
-    SpinlockProtected<IntrusiveRedBlackTree<&PageDirectory::m_tree_node>, LockRank::None> map {};
+    RecursiveSpinlockProtected<IntrusiveRedBlackTree<&PageDirectory::m_tree_node>, LockRank::None> map {};
 };
 
 static Singleton<SATPMap> s_satp_map;

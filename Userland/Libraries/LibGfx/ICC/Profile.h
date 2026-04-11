@@ -288,11 +288,15 @@ public:
     // Converts from the profile connection space to an 8-bits-per-channel color.
     // The notes on `to_pcs()` apply to this too.
     ErrorOr<void> from_pcs(Profile const& source_profile, FloatVector3, Bytes) const;
+    ErrorOr<void> from_pcs(ColorSpace source_connection_space, XYZ const& source_illuminant, FloatVector3, Bytes) const;
 
     ErrorOr<CIELAB> to_lab(ReadonlyBytes) const;
 
     ErrorOr<void> convert_image(Bitmap&, Profile const& source_profile) const;
     ErrorOr<void> convert_cmyk_image(Bitmap&, CMYKBitmap const&, Profile const& source_profile) const;
+
+    ErrorOr<void> convert_cmyk_image_to_cmyk_image(CMYKBitmap&, Profile const& source_profile) const;
+    ErrorOr<void> convert_image_to_cmyk_image(CMYKBitmap&, Bitmap const&, Profile const& source_profile) const;
 
     // Only call these if you know that this is an RGB matrix-based profile.
     XYZ const& red_matrix_column() const;

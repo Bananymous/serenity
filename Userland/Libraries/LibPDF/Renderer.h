@@ -64,37 +64,90 @@ struct TextState {
     bool knockout { true };
 };
 
-struct ClippingPaths {
-    Gfx::Path current;
-    Gfx::Path next;
+struct ClippingState {
+    Gfx::IntRect clip_bounding_box;
+    bool has_own_clip { false };
+    RefPtr<Gfx::Bitmap> clip_path_alpha {};
+};
+
+struct TransparencyGroupAttributes {
+    RefPtr<ColorSpace> color_space;
+    bool is_isolated { false };
+    bool is_knockout { false };
+};
+
+enum class BlendMode {
+    // TABLE 7.2 Standard separable blend modes
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+
+    // TABLE 7.3 Standard nonseparable blend modes
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+};
+
+enum class AlphaSource {
+    Opacity,
+    Shape,
 };
 
 struct GraphicsState {
     Gfx::AffineTransform ctm;
-    ClippingPaths clipping_paths;
+    ClippingState clipping_state;
     RefPtr<ColorSpace> stroke_color_space { DeviceGrayColorSpace::the() };
     RefPtr<ColorSpace> paint_color_space { DeviceGrayColorSpace::the() };
     ColorOrStyle stroke_style { Color::Black };
     ColorOrStyle paint_style { Color::Black };
     ByteString color_rendering_intent { "RelativeColorimetric"sv };
-    float flatness_tolerance { 0.0f };
+    float flatness_tolerance { 1.0f };
     float line_width { 1.0f };
     LineCapStyle line_cap_style { LineCapStyle::ButtCap };
     LineJoinStyle line_join_style { LineJoinStyle::Miter };
     float miter_limit { 10.0f };
     LineDashPattern line_dash_pattern { {}, 0 };
     TextState text_state {};
+
+    BlendMode blend_mode { BlendMode::Normal };
+
+    struct SMask {
+        // TABLE 7.10 Entries in a soft-mask dictionary
+        enum class Type {
+            Alpha,
+            Luminosity,
+        };
+        Type type { Type::Alpha };
+        NonnullRefPtr<StreamObject> group;
+        TransparencyGroupAttributes group_attributes;
+        Vector<float, 4> background_color { 0.0f, 0.0f, 0.0f, 0.0f };
+        RefPtr<Function> transfer_function {}; // nullptr means identity function.
+    };
+    Optional<SMask> soft_mask {};
+
+    float stroke_alpha_constant { 1.0f };
+    float paint_alpha_constant { 1.0f };
+    AlphaSource alpha_source { AlphaSource::Opacity };
 };
 
 struct RenderingPreferences {
     bool show_clipping_paths { false };
     bool show_images { true };
     bool show_hidden_text { false };
-    bool show_diagnostics { false };
 
-    bool clip_images { true };
-    bool clip_paths { true };
-    bool clip_text { true };
+    bool apply_clip { true };
+
+    bool use_constant_alpha { true };
 
     unsigned hash() const
     {
@@ -103,6 +156,8 @@ struct RenderingPreferences {
 };
 
 class Renderer {
+    friend class PatternColorSpace;
+
 public:
     static PDFErrorsOr<void> render(Document&, Page const&, RefPtr<Gfx::Bitmap>, Color background_color, RenderingPreferences preferences);
 
@@ -137,23 +192,19 @@ private:
     PDFErrorOr<void> handle_text_next_line_show_string(ReadonlySpan<Value> args, Optional<NonnullRefPtr<DictObject>> = {});
     PDFErrorOr<void> handle_text_next_line_show_string_set_spacing(ReadonlySpan<Value> args, Optional<NonnullRefPtr<DictObject>> = {});
 
-    class ClipRAII {
-    public:
-        ClipRAII(Renderer& renderer)
-            : m_renderer(renderer)
-        {
-            m_renderer.activate_clip();
-        }
-        ~ClipRAII() { m_renderer.deactivate_clip(); }
+    PDFErrorOr<void> prepare_clipped_bitmap_painter();
+    void copy_current_clip_path_content_to_output();
 
-    private:
-        Renderer& m_renderer;
-    };
-    void activate_clip();
-    void deactivate_clip();
+    PDFErrorOr<void> add_clip_path(Gfx::Path, Gfx::WindingRule);
+    void finalize_clip_before_graphics_state_restore();
+    PDFErrorOr<void> restore_previous_clip_after_graphics_state_restore();
 
     void begin_path_paint();
-    void end_path_paint();
+    PDFErrorOr<void> end_path_paint();
+    void stroke_current_path();
+    void fill_current_path(Gfx::WindingRule);
+    void fill_and_stroke_current_path(Gfx::WindingRule);
+    PDFErrorOr<GraphicsState::SMask> read_smask_dict(NonnullRefPtr<DictObject> dict);
     PDFErrorOr<void> set_graphics_state_from_dict(NonnullRefPtr<DictObject>);
     PDFErrorOr<void> show_text(ByteString const&);
 
@@ -163,13 +214,25 @@ private:
     };
     PDFErrorOr<LoadedImage> load_image(NonnullRefPtr<StreamObject>);
     PDFErrorOr<NonnullRefPtr<Gfx::Bitmap>> make_mask_bitmap_from_array(NonnullRefPtr<ArrayObject>, NonnullRefPtr<StreamObject>);
-    PDFErrorOr<void> show_image(NonnullRefPtr<StreamObject>);
-    void show_empty_image(Gfx::IntSize);
+    PDFErrorOr<TransparencyGroupAttributes> read_transparency_group_attributes(NonnullRefPtr<DictObject>);
+    PDFErrorOr<void> paint_form_xobject(NonnullRefPtr<StreamObject>);
+    PDFErrorOr<void> paint_image_xobject(NonnullRefPtr<StreamObject>);
+    void paint_empty_image(Gfx::IntSize);
     PDFErrorOr<NonnullRefPtr<ColorSpace>> get_color_space_from_resources(Value const&, NonnullRefPtr<DictObject>);
     PDFErrorOr<NonnullRefPtr<ColorSpace>> get_color_space_from_document(NonnullRefPtr<Object>);
 
+    static ColorOrStyle style_with_alpha(ColorOrStyle style, float alpha)
+    {
+        if (style.has<Color>())
+            return style.get<Color>().with_alpha(round_to<u8>(clamp(alpha * 255, 0, 255)));
+        return style;
+    }
+
     ALWAYS_INLINE GraphicsState& state() { return m_graphics_state_stack.last(); }
     ALWAYS_INLINE TextState& text_state() { return state().text_state; }
+
+    Gfx::Painter& painter();
+    Gfx::AntiAliasingPainter& anti_aliasing_painter();
 
     template<typename T>
     ALWAYS_INLINE Gfx::Point<T> map(T x, T y) const;
@@ -190,17 +253,34 @@ private:
     Gfx::AffineTransform calculate_image_space_transformation(Gfx::IntSize);
 
     PDFErrorOr<NonnullRefPtr<PDFFont>> get_font(FontCacheKey const&);
+    PDFErrorOr<void> set_font(NonnullRefPtr<DictObject> font_dictionary, float font_size);
+
+    PDFErrorOr<void> set_blend_mode(ReadonlySpan<Value>);
 
     class ScopedState;
 
     RefPtr<Document> m_document;
     RefPtr<Gfx::Bitmap> m_bitmap;
+
+    RefPtr<Gfx::Bitmap> m_clipped_bitmap;
+    Optional<Gfx::Painter> m_clipped_bitmap_painter;
+    Optional<Gfx::AntiAliasingPainter> m_clipped_bitmap_anti_aliasing_painter;
+
     Page const& m_page;
     Gfx::Painter m_painter;
     Gfx::AntiAliasingPainter m_anti_aliasing_painter;
     RenderingPreferences m_rendering_preferences;
 
+    // "In PDF (unlike PostScript), the current path is not part of the graphics state and is not saved and
+    //  restored along with the other graphics state parameters."
     Gfx::Path m_current_path;
+    enum class AddPathAsClip {
+        No,
+        Nonzero,
+        EvenOdd,
+    };
+    AddPathAsClip m_add_path_as_clip { AddPathAsClip::No };
+
     Vector<GraphicsState> m_graphics_state_stack;
     Gfx::AffineTransform m_text_matrix;
     Gfx::AffineTransform m_text_line_matrix;
@@ -209,6 +289,12 @@ private:
     Gfx::AffineTransform mutable m_text_rendering_matrix;
 
     HashMap<FontCacheKey, NonnullRefPtr<PDFFont>> m_font_cache;
+
+    // Only used for m_rendering_preferences.show_clipping_paths.
+    void show_clipping_paths();
+    Vector<Gfx::Path> m_clip_paths_to_show_for_debugging;
+    // Used to offset the PaintStyle's origin when rendering a pattern.
+    RefPtr<Gfx::PaintStyle> m_original_paint_style;
 };
 
 }

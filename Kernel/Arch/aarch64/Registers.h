@@ -39,7 +39,7 @@ struct alignas(u64) ID_AA64ISAR0_EL1 {
         ID_AA64ISAR0_EL1 feature_register;
 
         asm volatile("mrs %[value], ID_AA64ISAR0_EL1"
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -71,7 +71,7 @@ struct alignas(u64) ID_AA64ISAR1_EL1 {
         ID_AA64ISAR1_EL1 feature_register;
 
         asm volatile("mrs %[value], ID_AA64ISAR1_EL1"
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -102,7 +102,7 @@ struct alignas(u64) ID_AA64ISAR2_EL1 {
         ID_AA64ISAR2_EL1 feature_register;
 
         asm volatile("mrs %[value], ID_AA64ISAR2_EL1"
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -134,7 +134,7 @@ struct alignas(u64) ID_AA64PFR0_EL1 {
         ID_AA64PFR0_EL1 feature_register;
 
         asm volatile("mrs %[value], ID_AA64PFR0_EL1"
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -166,7 +166,7 @@ struct alignas(u64) ID_AA64PFR1_EL1 {
         ID_AA64PFR1_EL1 feature_register;
 
         asm volatile("mrs %[value], ID_AA64PFR1_EL1"
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -187,7 +187,7 @@ struct alignas(u64) ID_AA64PFR2_EL1 {
         ID_AA64PFR2_EL1 feature_register;
 
         asm volatile("mrs %[value], s3_0_c0_c4_2" // encoded ID_AA64PFR2_EL1 register
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -212,7 +212,7 @@ struct alignas(u64) MPIDR_EL1 {
         MPIDR_EL1 affinity_register;
 
         asm volatile("mrs %[value], MPIDR_EL1"
-                     : [value] "=r"(affinity_register));
+            : [value] "=r"(affinity_register));
 
         return affinity_register;
     }
@@ -243,7 +243,7 @@ struct alignas(u64) ID_AA64MMFR0_EL1 {
         ID_AA64MMFR0_EL1 feature_register;
 
         asm volatile("mrs %[value], ID_AA64MMFR0_EL1"
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -275,7 +275,7 @@ struct alignas(u64) ID_AA64MMFR1_EL1 {
         ID_AA64MMFR1_EL1 feature_register;
 
         asm volatile("mrs %[value], ID_AA64MMFR1_EL1"
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -307,7 +307,7 @@ struct alignas(u64) ID_AA64MMFR2_EL1 {
         ID_AA64MMFR2_EL1 feature_register;
 
         asm volatile("mrs %[value], ID_AA64MMFR2_EL1"
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -339,7 +339,7 @@ struct alignas(u64) ID_AA64MMFR3_EL1 {
         ID_AA64MMFR3_EL1 feature_register;
 
         asm volatile("mrs %[value], s3_0_c0_c7_3" // encoded ID_AA64MMFR3_EL1 register
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -359,7 +359,7 @@ struct alignas(u64) ID_AA64MMFR4_EL1 {
         ID_AA64MMFR4_EL1 feature_register;
 
         asm volatile("mrs %[value], s3_0_c0_c7_4" // encoded ID_AA64MMFR4_EL1 register
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -391,7 +391,7 @@ struct alignas(u64) ID_AA64SMFR0_EL1 {
         ID_AA64SMFR0_EL1 feature_register;
 
         asm volatile("mrs %[value], s3_0_c0_c4_5" // encoded ID_AA64SMFR0_EL1 register
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -422,7 +422,7 @@ struct alignas(u64) ID_AA64ZFR0_EL1 {
         ID_AA64ZFR0_EL1 feature_register;
 
         asm volatile("mrs %[value], s3_0_c0_c4_4" // encoded ID_AA64ZFR0_EL1 register
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -454,7 +454,7 @@ struct alignas(u64) ID_AA64DFR0_EL1 {
         ID_AA64DFR0_EL1 feature_register;
 
         asm volatile("mrs %[value], ID_AA64DFR0_EL1"
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -481,7 +481,7 @@ struct alignas(u64) ID_AA64DFR1_EL1 {
         ID_AA64DFR1_EL1 feature_register;
 
         asm volatile("mrs %[value], ID_AA64DFR1_EL1"
-                     : [value] "=r"(feature_register));
+            : [value] "=r"(feature_register));
 
         return feature_register;
     }
@@ -499,7 +499,7 @@ struct alignas(u64) CNTFRQ_EL0 {
         CNTFRQ_EL0 frequency;
 
         asm volatile("mrs %[value], CNTFRQ_EL0"
-                     : [value] "=r"(frequency));
+            : [value] "=r"(frequency));
 
         return frequency;
     }
@@ -517,7 +517,7 @@ struct alignas(u64) CNTP_TVAL_EL0 {
         CNTP_TVAL_EL0 timer_value;
 
         asm volatile("mrs %[value], CNTP_TVAL_EL0"
-                     : [value] "=r"(timer_value));
+            : [value] "=r"(timer_value));
 
         return timer_value;
     }
@@ -542,7 +542,7 @@ struct alignas(u64) CNTP_CTL_EL0 {
         CNTP_CTL_EL0 control_register;
 
         asm volatile("mrs %[value], CNTP_CTL_EL0"
-                     : [value] "=r"(control_register));
+            : [value] "=r"(control_register));
 
         return control_register;
     }
@@ -564,7 +564,7 @@ struct alignas(u64) CNTPCT_EL0 {
         CNTPCT_EL0 physical_count;
 
         asm volatile("mrs %[value], CNTPCT_EL0"
-                     : [value] "=r"(physical_count));
+            : [value] "=r"(physical_count));
 
         return physical_count;
     }
@@ -582,7 +582,7 @@ struct alignas(u64) CNTV_TVAL_EL0 {
         CNTV_TVAL_EL0 timer_value;
 
         asm volatile("mrs %[value], CNTV_TVAL_EL0"
-                     : [value] "=r"(timer_value));
+            : [value] "=r"(timer_value));
 
         return timer_value;
     }
@@ -607,7 +607,7 @@ struct alignas(u64) CNTV_CTL_EL0 {
         CNTV_CTL_EL0 control_register;
 
         asm volatile("mrs %[value], CNTV_CTL_EL0"
-                     : [value] "=r"(control_register));
+            : [value] "=r"(control_register));
 
         return control_register;
     }
@@ -629,7 +629,7 @@ struct alignas(u64) CNTVCT_EL0 {
         CNTVCT_EL0 virtual_count;
 
         asm volatile("mrs %[value], CNTVCT_EL0"
-                     : [value] "=r"(virtual_count));
+            : [value] "=r"(virtual_count));
 
         return virtual_count;
     }
@@ -735,14 +735,9 @@ struct alignas(u64) TCR_EL1 {
         TCR_EL1 tcr_el1;
 
         asm volatile("mrs %[value], tcr_el1"
-                     : [value] "=r"(tcr_el1));
+            : [value] "=r"(tcr_el1));
 
         return tcr_el1;
-    }
-
-    static constexpr TCR_EL1 reset_value()
-    {
-        return {};
     }
 };
 static_assert(sizeof(TCR_EL1) == 8);
@@ -810,29 +805,139 @@ struct alignas(u64) SCTLR_EL1 {
         SCTLR_EL1 sctlr;
 
         asm volatile("mrs %[value], sctlr_el1"
-                     : [value] "=r"(sctlr));
+            : [value] "=r"(sctlr));
 
         return sctlr;
     }
 
-    static constexpr SCTLR_EL1 reset_value()
+    static constexpr SCTLR_EL1 default_value()
     {
         SCTLR_EL1 system_control_register_el1 = {};
+
+        // Our defaults:
         system_control_register_el1.SA = 1;
         system_control_register_el1.SA0 = 1;
+        system_control_register_el1.IESB = 1;
+
+        // Allow EL0 to read CTR_EL0 (the cache type register).
+        system_control_register_el1.UCT = 1;
+
+        // Fields that are RES1 if no extensions are supported:
         system_control_register_el1.ITD = 1;
         system_control_register_el1.SED = 1;
         system_control_register_el1.EOS = 1;
         system_control_register_el1.TSCXT = 1;
-        system_control_register_el1.IESB = 1;
         system_control_register_el1.EIS = 1;
         system_control_register_el1.SPAN = 1;
-        system_control_register_el1.LSMAOE = 1;
         system_control_register_el1.nTLSMD = 1;
+        system_control_register_el1.LSMAOE = 1;
+
         return system_control_register_el1;
     }
 };
 static_assert(sizeof(SCTLR_EL1) == 8);
+
+// https://developer.arm.com/documentation/ddi0601/2025-06/AArch64-Registers/SCTLR-EL2--System-Control-Register--EL2-
+// System Control Register
+struct alignas(u64) SCTLR_EL2 {
+    u64 M : 1;
+    u64 A : 1;
+    u64 C : 1;
+    u64 SA : 1;
+    u64 SA0 : 1;
+    u64 CP15BEN : 1;
+    u64 nAA : 1;
+    u64 ITD : 1;
+    u64 SED : 1;
+    u64 _reserved9 : 1 = 0;
+    u64 EnRCTX : 1;
+    u64 EOS : 1;
+    u64 I : 1;
+    u64 EnDB : 1;
+    u64 DZE : 1;
+    u64 UCT : 1;
+    u64 nTWI : 1;
+    u64 _reserved17 : 1 = 0;
+    u64 nTWE : 1;
+    u64 WXN : 1;
+    u64 TSCXT : 1;
+    u64 IESB : 1;
+    u64 EIS : 1;
+    u64 SPAN : 1;
+    u64 E0E : 1;
+    u64 EE : 1;
+    u64 UCI : 1;
+    u64 EnDA : 1;
+    u64 nTLSMD : 1;
+    u64 LSMAOE : 1;
+    u64 EnIB : 1;
+    u64 EnIA : 1;
+    u64 CMOW : 1;
+    u64 MSCEn : 1;
+    u64 EnFPM : 1;
+    u64 BT0 : 1;
+    u64 BT1 : 1;
+    u64 ITFSB : 1;
+    u64 TCF0 : 2;
+    u64 TCF : 2;
+    u64 ATA0 : 1;
+    u64 ATA : 1;
+    u64 DSSBS : 1;
+    u64 TWEDEn : 1;
+    u64 TWEDEL : 4;
+    u64 TMT0 : 1;
+    u64 TMT : 1;
+    u64 TME0 : 1;
+    u64 TME : 1;
+    u64 EnASR : 1;
+    u64 EnAS0 : 1;
+    u64 EnALS : 1;
+    u64 EPAN : 1;
+    u64 TCSO0 : 1;
+    u64 TCSO : 1;
+    u64 EnTP2 : 1;
+    u64 NMI : 1;
+    u64 SPINTMASK : 1;
+    u64 TIDCP : 1;
+
+    static inline void write(SCTLR_EL2 sctlr_el2)
+    {
+        asm volatile("msr sctlr_el2, %[value]" ::[value] "r"(sctlr_el2));
+    }
+
+    static inline SCTLR_EL2 read()
+    {
+        SCTLR_EL2 sctlr;
+
+        asm volatile("mrs %[value], sctlr_el2"
+            : [value] "=r"(sctlr));
+
+        return sctlr;
+    }
+
+    static constexpr SCTLR_EL2 default_value()
+    {
+        SCTLR_EL2 system_control_register_el2 = {};
+
+        // Our defaults:
+        system_control_register_el2.SA = 1;
+        system_control_register_el2.IESB = 1;
+
+        // Fields that are RES1 if no extensions are supported:
+        system_control_register_el2.SA0 = 1;
+        system_control_register_el2.CP15BEN = 1;
+        system_control_register_el2.EOS = 1;
+        system_control_register_el2.nTWI = 1;
+        system_control_register_el2.nTWE = 1;
+        system_control_register_el2.EIS = 1;
+        system_control_register_el2.SPAN = 1;
+        system_control_register_el2.nTLSMD = 1;
+        system_control_register_el2.LSMAOE = 1;
+
+        return system_control_register_el2;
+    }
+};
+static_assert(sizeof(SCTLR_EL2) == 8);
 
 // https://developer.arm.com/documentation/ddi0601/2022-09/AArch64-Registers/MIDR-EL1--Main-ID-Register?lang=en
 // MIDR_EL1, Main ID Register
@@ -849,7 +954,7 @@ struct alignas(u64) MIDR_EL1 {
         MIDR_EL1 main_id_register;
 
         asm volatile("mrs %[value], MIDR_EL1"
-                     : [value] "=r"(main_id_register));
+            : [value] "=r"(main_id_register));
 
         return main_id_register;
     }
@@ -866,7 +971,7 @@ struct alignas(u64) AIDR_EL1 {
         AIDR_EL1 auxiliary_id_register;
 
         asm volatile("mrs %[value], AIDR_EL1"
-                     : [value] "=r"(auxiliary_id_register));
+            : [value] "=r"(auxiliary_id_register));
 
         return auxiliary_id_register;
     }
@@ -931,7 +1036,7 @@ struct alignas(u64) HCR_EL2 {
         HCR_EL2 spsr;
 
         asm volatile("mrs %[value], hcr_el2"
-                     : [value] "=r"(spsr));
+            : [value] "=r"(spsr));
 
         return spsr;
     }
@@ -987,7 +1092,7 @@ struct alignas(u64) SCR_EL3 {
         SCR_EL3 scr;
 
         asm volatile("mrs %[value], scr_el3"
-                     : [value] "=r"(scr));
+            : [value] "=r"(scr));
 
         return scr;
     }
@@ -1035,7 +1140,7 @@ struct alignas(u64) SPSR_EL1 {
         SPSR_EL1 spsr;
 
         asm volatile("mrs %[value], spsr_el1"
-                     : [value] "=r"(spsr));
+            : [value] "=r"(spsr));
 
         return spsr;
     }
@@ -1084,7 +1189,7 @@ struct alignas(u64) SPSR_EL2 {
         SPSR_EL2 spsr;
 
         asm volatile("mrs %[value], spsr_el2"
-                     : [value] "=r"(spsr));
+            : [value] "=r"(spsr));
 
         return spsr;
     }
@@ -1133,7 +1238,7 @@ struct alignas(u64) SPSR_EL3 {
         SPSR_EL3 spsr;
 
         asm volatile("mrs %[value], spsr_el3"
-                     : [value] "=r"(spsr));
+            : [value] "=r"(spsr));
 
         return spsr;
     }
@@ -1167,7 +1272,7 @@ struct ESR_EL1 {
         ESR_EL1 esr_el1;
 
         asm volatile("mrs %[value], esr_el1"
-                     : [value] "=r"(esr_el1));
+            : [value] "=r"(esr_el1));
 
         return esr_el1;
     }
@@ -1183,7 +1288,7 @@ struct FAR_EL1 {
         FAR_EL1 far_el1;
 
         asm volatile("mrs %[value], far_el1"
-                     : [value] "=r"(far_el1));
+            : [value] "=r"(far_el1));
 
         return far_el1;
     }
@@ -1314,6 +1419,16 @@ static inline bool exception_class_is_svc_instruction_execution(u8 exception_cla
     return exception_class == 0x11 || exception_class == 0x15;
 }
 
+static inline bool exception_class_is_breakpoint_instruction(u8 exception_class)
+{
+    return exception_class == 0x38 || exception_class == 0x3c;
+}
+
+static inline bool exception_class_is_software_step(u8 exception_class)
+{
+    return exception_class == 0x32 || exception_class == 0x33;
+}
+
 // D17.2.37 ESR_EL1, Exception Syndrome Register (EL1)
 // ISS encoding for an exception from a Data Abort
 // DFSC, bits [5:0]
@@ -1425,7 +1540,7 @@ struct DAIF {
         DAIF daif;
 
         asm volatile("mrs %[value], daif"
-                     : [value] "=r"(daif));
+            : [value] "=r"(daif));
 
         return daif;
     }
@@ -1434,14 +1549,14 @@ struct DAIF {
     static inline void clear_I()
     {
         asm volatile("msr daifclr, #2" ::
-                         :);
+                :);
     }
 
     // Setting the I bit, causes interrupts to be disabled.
     static inline void set_I()
     {
         asm volatile("msr daifset, #2" ::
-                         :);
+                :);
     }
 };
 static_assert(sizeof(DAIF) == 8);
@@ -1460,7 +1575,7 @@ struct alignas(u64) NZCV {
     {
         NZCV nzcv;
         asm volatile("mrs %[value], nzcv"
-                     : [value] "=r"(nzcv));
+            : [value] "=r"(nzcv));
         return nzcv;
     }
 };
@@ -1475,7 +1590,7 @@ struct alignas(u64) PMCCNTR_EL0 {
     {
         PMCCNTR_EL0 pmccntr_el0;
         asm volatile("mrs %[value], pmccntr_el0"
-                     : [value] "=r"(pmccntr_el0));
+            : [value] "=r"(pmccntr_el0));
         return pmccntr_el0;
     }
 };
@@ -1500,5 +1615,170 @@ struct alignas(u64) CPACR_EL1 {
     }
 };
 static_assert(sizeof(CPACR_EL1) == 8);
+
+constexpr u64 SPSR_EL1_SS_FLAG = 1 << 21; // Single-step bit in SPSR_EL1
+
+constexpr u64 MDSCR_EL1_SS_FLAG = 1 << 0; // Single-step bit in MDSCR_EL1
+
+// https://developer.arm.com/documentation/ddi0601/2024-12/AArch64-Registers/ICC-EOIR1-EL1--Interrupt-Controller-End-Of-Interrupt-Register-1
+// ICC_EOIR1_EL1, Interrupt Controller End Of Interrupt Register 1
+struct alignas(u64) ICC_EOIR1_EL1 {
+    u64 INTID : 24;
+    u64 : 40;
+
+    static inline void write(ICC_EOIR1_EL1 icc_eoir1_el1)
+    {
+        asm volatile("msr ICC_EOIR1_EL1, %[value]" ::[value] "r"(icc_eoir1_el1));
+    }
+};
+static_assert(sizeof(ICC_EOIR1_EL1) == 8);
+
+// https://developer.arm.com/documentation/ddi0601/2024-12/AArch64-Registers/ICC-IAR1-EL1--Interrupt-Controller-Interrupt-Acknowledge-Register-1
+// ICC_IAR1_EL1, Interrupt Controller Interrupt Acknowledge Register 1
+struct alignas(u64) ICC_IAR1_EL1 {
+    u64 INTID : 24;
+    u64 : 40;
+
+    static inline ICC_IAR1_EL1 read()
+    {
+        ICC_IAR1_EL1 icc_iar1_el1;
+        asm volatile("mrs %[value], ICC_IAR1_EL1" :
+            [value] "=r"(icc_iar1_el1));
+        return icc_iar1_el1;
+    }
+};
+static_assert(sizeof(ICC_IAR1_EL1) == 8);
+
+// https://developer.arm.com/documentation/ddi0601/2024-12/AArch64-Registers/ICC-SRE-EL1--Interrupt-Controller-System-Register-Enable-Register--EL1-
+// ICC_SRE_EL1, Interrupt Controller System Register Enable Register (EL1)
+struct alignas(u64) ICC_SRE_EL1 {
+    u64 SRE : 1;
+    u64 DFB : 1;
+    u64 DIB : 1;
+    u64 : 61;
+
+    static inline void write(ICC_SRE_EL1 icc_sre_el1)
+    {
+        asm volatile("msr ICC_SRE_EL1, %[value]" ::[value] "r"(icc_sre_el1));
+    }
+};
+static_assert(sizeof(ICC_SRE_EL1) == 8);
+
+// https://developer.arm.com/documentation/ddi0601/2024-12/AArch64-Registers/ICC-PMR-EL1--Interrupt-Controller-Interrupt-Priority-Mask-Register
+// ICC_PMR_EL1, Interrupt Controller Interrupt Priority Mask Register
+struct alignas(u64) ICC_PMR_EL1 {
+    u64 Priority : 8;
+    u64 : 56;
+
+    static inline void write(ICC_PMR_EL1 icc_pmr_el1)
+    {
+        asm volatile("msr ICC_PMR_EL1, %[value]" ::[value] "r"(icc_pmr_el1));
+    }
+};
+static_assert(sizeof(ICC_PMR_EL1) == 8);
+
+// https://developer.arm.com/documentation/ddi0601/2024-12/AArch64-Registers/ICC-BPR1-EL1--Interrupt-Controller-Binary-Point-Register-1
+// ICC_BPR1_EL1, Interrupt Controller Binary Point Register 1
+struct alignas(u64) ICC_BPR1_EL1 {
+    u64 BinaryPoint : 3;
+    u64 : 61;
+
+    static inline void write(ICC_BPR1_EL1 icc_bpr1_el1)
+    {
+        asm volatile("msr ICC_BPR1_EL1, %[value]" ::[value] "r"(icc_bpr1_el1));
+    }
+};
+static_assert(sizeof(ICC_BPR1_EL1) == 8);
+
+// https://developer.arm.com/documentation/ddi0601/2024-12/AArch64-Registers/ICC-CTLR-EL1--Interrupt-Controller-Control-Register--EL1-
+// ICC_CTLR_EL1, Interrupt Controller Control Register (EL1)
+struct alignas(u64) ICC_CTLR_EL1 {
+    u64 CBPR : 1;
+    u64 EOImode : 1;
+    u64 : 4;
+    u64 PMHE : 1;
+    u64 : 1;
+    u64 PRIbits : 3;
+    u64 IDbits : 3;
+    u64 SEIS : 1;
+    u64 A3V : 1;
+    u64 : 2;
+    u64 RSS : 1;
+    u64 ExtRange : 1;
+    u64 : 44;
+
+    static inline ICC_CTLR_EL1 read()
+    {
+        ICC_CTLR_EL1 icc_ctlr_el1;
+        asm volatile("mrs %[value], ICC_CTLR_EL1" :
+            [value] "=r"(icc_ctlr_el1));
+        return icc_ctlr_el1;
+    }
+
+    static inline void write(ICC_CTLR_EL1 icc_ctlr_el1)
+    {
+        asm volatile("msr ICC_CTLR_EL1, %[value]" ::[value] "r"(icc_ctlr_el1));
+    }
+};
+static_assert(sizeof(ICC_CTLR_EL1) == 8);
+
+// https://developer.arm.com/documentation/ddi0601/2024-12/AArch64-Registers/ICC-IGRPEN1-EL1--Interrupt-Controller-Interrupt-Group-1-Enable-Register
+// ICC_IGRPEN1_EL1, Interrupt Controller Interrupt Group 1 Enable Register
+struct alignas(u64) ICC_IGRPEN1_EL1 {
+    u64 Enable : 1;
+    u64 : 63;
+
+    static inline void write(ICC_IGRPEN1_EL1 icc_igrpen1_el1)
+    {
+        asm volatile("msr ICC_IGRPEN1_EL1, %[value]" ::[value] "r"(icc_igrpen1_el1));
+    }
+};
+static_assert(sizeof(ICC_IGRPEN1_EL1) == 8);
+
+// https://developer.arm.com/documentation/ddi0601/2024-12/AArch64-Registers/ICC-SRE-EL2--Interrupt-Controller-System-Register-Enable-Register--EL2-
+// ICC_SRE_EL2, Interrupt Controller System Register Enable Register (EL2)
+struct alignas(u64) ICC_SRE_EL2 {
+    u64 SRE : 1;
+    u64 DFB : 1;
+    u64 DIB : 1;
+    u64 Enable : 1;
+    u64 : 60;
+
+    static inline void write(ICC_SRE_EL2 icc_sre_el2)
+    {
+        asm volatile("msr ICC_SRE_EL2, %[value]" ::[value] "r"(icc_sre_el2));
+    }
+};
+static_assert(sizeof(ICC_SRE_EL2) == 8);
+
+// https://developer.arm.com/documentation/ddi0601/2024-12/AArch64-Registers/ICH-HCR-EL2--Interrupt-Controller-Hyp-Control-Register
+// ICH_HCR_EL2, Interrupt Controller Hyp Control Register
+struct alignas(u64) ICH_HCR_EL2 {
+    u64 En : 1;
+    u64 UIE : 1;
+    u64 LRPENPIE : 1;
+    u64 NPIE : 1;
+    u64 VGrp0EIE : 1;
+    u64 VGrp0DIE : 1;
+    u64 VGrp1EIE : 1;
+    u64 VGrp1DIE : 1;
+    u64 vSGIEOICount : 1;
+    u64 : 1;
+    u64 TC : 1;
+    u64 TALL0 : 1;
+    u64 TALL1 : 1;
+    u64 TSEI : 1;
+    u64 TDIR : 1;
+    u64 DVIM : 1;
+    u64 : 11;
+    u64 EOIcount : 5;
+    u64 : 32;
+
+    static inline void write(ICH_HCR_EL2 ich_hcr_el2)
+    {
+        asm volatile("msr ICH_HCR_EL2, %[value]" ::[value] "r"(ich_hcr_el2));
+    }
+};
+static_assert(sizeof(ICH_HCR_EL2) == 8);
 
 }

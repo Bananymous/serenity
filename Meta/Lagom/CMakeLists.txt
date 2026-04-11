@@ -360,7 +360,7 @@ add_lagom_library_install_rules(JSClangPlugin)
 add_library(LibC INTERFACE)
 add_library(LibCrypt INTERFACE)
 add_library(LibSystem INTERFACE)
-if (NOT APPLE AND NOT ANDROID AND NOT EMSCRIPTEN AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "OpenBSD" AND NOT HAIKU)
+if (NOT APPLE AND NOT EMSCRIPTEN AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "OpenBSD" AND NOT HAIKU)
     target_link_libraries(LibCrypt INTERFACE crypt) # LibCore::Account uses crypt() but it's not in libcrypt on macOS
 endif()
 if (SERENITYOS)
@@ -496,6 +496,7 @@ if (BUILD_LAGOM)
         SoftGPU
         Shell
         SQL
+        SSH
         Syntax
         TextCodec
         Threading
@@ -563,7 +564,7 @@ if (BUILD_LAGOM)
 
     add_serenity_subdirectory(Userland/Shell)
 
-    if (NOT ENABLE_FUZZERS AND NOT ENABLE_COMPILER_EXPLORER_BUILD AND NOT ANDROID AND NOT IOS)
+    if (NOT ENABLE_FUZZERS AND NOT ENABLE_COMPILER_EXPLORER_BUILD)
         # Lagom Services
         add_serenity_subdirectory(Userland/Services)
 
@@ -577,6 +578,7 @@ if (BUILD_LAGOM)
 
         lagom_utility(animation SOURCES ../../Userland/Utilities/animation.cpp LIBS LibGfx LibMain)
         lagom_utility(base64 SOURCES ../../Userland/Utilities/base64.cpp LIBS LibMain)
+        lagom_utility(cat SOURCES ../../Userland/Utilities/cat.cpp LIBS LibMain)
 
         if (NOT EMSCRIPTEN)
             lagom_utility(disasm SOURCES ../../Userland/Utilities/disasm.cpp LIBS LibELF LibDisassembly LibMain)
@@ -584,6 +586,7 @@ if (BUILD_LAGOM)
         endif()
 
         lagom_utility(gml-format SOURCES ../../Userland/Utilities/gml-format.cpp LIBS LibGUI LibMain)
+        lagom_utility(gron SOURCES ../../Userland/Utilities/gron.cpp LIBS LibMain)
         lagom_utility(gzip SOURCES ../../Userland/Utilities/gzip.cpp LIBS LibCompress LibMain)
 
         # Work around bug in JetBrains distributed CMake 3.27.2 where this causes infinite recursion in
@@ -595,6 +598,7 @@ if (BUILD_LAGOM)
 
         if (APPLE)
             add_serenity_subdirectory(Meta/Lagom/Contrib/MacPDF)
+            add_serenity_subdirectory(Meta/Lagom/Contrib/MacVideoPlayer)
         endif()
 
         find_package(SDL2 QUIET)
@@ -607,6 +611,7 @@ if (BUILD_LAGOM)
         lagom_utility(image SOURCES ../../Userland/Utilities/image.cpp LIBS LibGfx LibMain)
         lagom_utility(imgcmp SOURCES ../../Userland/Utilities/imgcmp.cpp LIBS LibGfx LibMain)
         lagom_utility(isobmff SOURCES ../../Userland/Utilities/isobmff.cpp LIBS LibGfx LibMain)
+        lagom_utility(jbig2-from-json SOURCES ../../Userland/Utilities/jbig2-from-json.cpp LIBS LibGfx LibMain)
         lagom_utility(ttfdisasm SOURCES ../../Userland/Utilities/ttfdisasm.cpp LIBS LibGfx LibMain)
         lagom_utility(js SOURCES ../../Userland/Utilities/js.cpp LIBS LibCrypto LibJS LibLine LibLocale LibMain LibTextCodec Threads::Threads)
         lagom_utility(hello SOURCES ../../Userland/Utilities/hello-world.jakt)
@@ -622,6 +627,7 @@ if (BUILD_LAGOM)
 
         lagom_utility(lzcat SOURCES ../../Userland/Utilities/lzcat.cpp LIBS LibCompress LibMain)
         lagom_utility(markdown-check SOURCES ../../Userland/Utilities/markdown-check.cpp LIBS LibFileSystem LibMarkdown LibMain LibManual LibURL)
+        lagom_utility(matroska SOURCES ../../Userland/Utilities/matroska.cpp LIBS LibMain LibMedia)
         lagom_utility(mkfs.fat SOURCES  ../../Userland/Utilities/mkfs.fat.cpp LIBS LibFileSystem LibMain)
 
         if (NOT EMSCRIPTEN)
@@ -655,6 +661,7 @@ if (BUILD_LAGOM)
         lagom_utility(wasm SOURCES ../../Userland/Utilities/wasm.cpp LIBS LibFileSystem LibWasm LibLine LibMain LibJS)
         lagom_utility(xml SOURCES ../../Userland/Utilities/xml.cpp LIBS LibFileSystem LibMain LibXML LibURL)
         lagom_utility(xzcat SOURCES ../../Userland/Utilities/xzcat.cpp LIBS LibCompress LibMain)
+        lagom_utility(zip SOURCES ../../Userland/Utilities/zip.cpp LIBS LibArchive LibFileSystem LibMain)
         lagom_utility(fdtdump SOURCES ../../Userland/Utilities/fdtdump.cpp LIBS LibDeviceTree LibMain)
         lagom_utility(hiddump SOURCES ../../Userland/Utilities/hiddump.cpp LIBS LibHID LibMain)
         lagom_utility(crypto-bench SOURCES ../../Userland/Utilities/crypto-bench.cpp LIBS LibMain LibCrypto)
@@ -680,25 +687,28 @@ if (BUILD_LAGOM)
         # LibTest tests from Tests/
         set(TEST_DIRECTORIES
             AK
-            LibCrypto
             LibCompress
+            LibCrypto
+            LibDisassembly
             LibGL
             LibGfx
             LibHID
             LibHTTP
             LibIMAP
+            LibLine
             LibLocale
             LibMarkdown
+            LibMedia
             LibPDF
             LibSQL
-            LibMedia
-        LibTest
-            LibTextCodec
+            LibSSH
             LibTTF
+            LibTest
+            LibTextCodec
             LibTimeZone
-            LibUnicode
             LibURL
-                LibXML
+            LibUnicode
+            LibXML
         )
         if (ENABLE_LAGOM_LIBWEB)
             list(APPEND TEST_DIRECTORIES LibWeb)

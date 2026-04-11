@@ -8,31 +8,54 @@
 
 #include <AK/Array.h>
 #include <AK/GenericShorthands.h>
+#include <AK/IntegralMath.h>
 #include <AK/Vector.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/PaintStyle.h>
 #include <LibGfx/Path.h>
+#include <LibGfx/WindingRule.h>
 
 namespace Gfx {
 
 namespace Detail {
 
-static auto constexpr coverage_lut = [] {
-    Array<u8, 256> coverage_lut {};
-    for (u32 sample = 0; sample <= 255; sample++)
-        coverage_lut[sample] = AK::popcount(sample);
-    return coverage_lut;
-}();
+template<unsigned SampleCount>
+struct NoAA {
+    static constexpr unsigned SamplesPerPixel = SampleCount;
 
-template<unsigned SamplesPerPixel>
-struct Sample {
-    static_assert(!first_is_one_of(SamplesPerPixel, 8u, 16u, 32u), "EdgeFlagPathRasterizer: Invalid samples per pixel!");
+    static u8 coverage_to_alpha(u8 coverage)
+    {
+        return coverage ? 255 : 0;
+    }
+};
+
+template<unsigned SampleCount>
+struct AA {
+    static constexpr unsigned SamplesPerPixel = SampleCount;
+
+    static u8 coverage_to_alpha(u8 coverage)
+    {
+        constexpr auto alpha_shift = AK::log2(256 / SamplesPerPixel);
+        if (!coverage)
+            return 0;
+        return (coverage << alpha_shift) - 1;
+    }
+};
+
+// 2-bit sample (mainly for use with NoAA).
+template<template<unsigned SamplesPerPixel> class AAMode>
+struct Sample2x : AAMode<2> {
+    using Type = u8;
+    static constexpr Array nrooks_subpixel_offsets {
+        (0.0f / 2.0f),
+        (1.0f / 2.0f),
+    };
 };
 
 // See paper for diagrams for how these offsets work, but they allow for nicely spread out samples in each pixel.
-template<>
-struct Sample<8> {
+template<template<unsigned SamplesPerPixel> class AAMode>
+struct Sample8x : AAMode<8> {
     using Type = u8;
     static constexpr Array nrooks_subpixel_offsets {
         (5.0f / 8.0f),
@@ -44,15 +67,10 @@ struct Sample<8> {
         (7.0f / 8.0f),
         (2.0f / 8.0f),
     };
-
-    static u8 compute_coverage(Type sample)
-    {
-        return coverage_lut[sample];
-    }
 };
 
-template<>
-struct Sample<16> {
+template<template<unsigned SamplesPerPixel> class AAMode>
+struct Sample16x : AAMode<16> {
     using Type = u16;
     static constexpr Array nrooks_subpixel_offsets {
         (1.0f / 16.0f),
@@ -72,17 +90,10 @@ struct Sample<16> {
         (5.0f / 16.0f),
         (13.0f / 16.0f),
     };
-
-    static u8 compute_coverage(Type sample)
-    {
-        return (
-            coverage_lut[(sample >> 0) & 0xff]
-            + coverage_lut[(sample >> 8) & 0xff]);
-    }
 };
 
-template<>
-struct Sample<32> {
+template<template<unsigned SamplesPerPixel> class AAMode>
+struct Sample32x : AAMode<32> {
     using Type = u32;
     static constexpr Array nrooks_subpixel_offsets {
         (28.0f / 32.0f),
@@ -118,15 +129,6 @@ struct Sample<32> {
         (2.0f / 32.0f),
         (19.0f / 32.0f),
     };
-
-    static u8 compute_coverage(Type sample)
-    {
-        return (
-            coverage_lut[(sample >> 0) & 0xff]
-            + coverage_lut[(sample >> 8) & 0xff]
-            + coverage_lut[(sample >> 16) & 0xff]
-            + coverage_lut[(sample >> 24) & 0xff]);
-    }
 };
 
 struct Edge {
@@ -140,7 +142,7 @@ struct Edge {
 
 }
 
-template<unsigned SamplesPerPixel = 32>
+template<typename SubpixelSample>
 class EdgeFlagPathRasterizer {
 public:
     EdgeFlagPathRasterizer(IntSize);
@@ -149,16 +151,8 @@ public:
     void fill(Painter&, Path const&, PaintStyle const&, float opacity, WindingRule, FloatPoint offset = {});
 
 private:
-    using SubpixelSample = Detail::Sample<SamplesPerPixel>;
     using SampleType = typename SubpixelSample::Type;
-
-    static u8 coverage_to_alpha(u8 coverage)
-    {
-        constexpr auto alpha_shift = AK::log2(256 / SamplesPerPixel);
-        if (!coverage)
-            return 0;
-        return (coverage << alpha_shift) - 1;
-    }
+    static constexpr unsigned SamplesPerPixel = SubpixelSample::SamplesPerPixel;
 
     struct EdgeExtent {
         int min_x;
@@ -230,8 +224,20 @@ private:
     } m_edge_table;
 };
 
-extern template class EdgeFlagPathRasterizer<8>;
-extern template class EdgeFlagPathRasterizer<16>;
-extern template class EdgeFlagPathRasterizer<32>;
+using Sample8xAA = Detail::Sample8x<Detail::AA>;
+using Sample16xAA = Detail::Sample16x<Detail::AA>;
+using Sample32xAA = Detail::Sample32x<Detail::AA>;
+using Sample2xNoAA = Detail::Sample2x<Detail::NoAA>;
+using Sample8xNoAA = Detail::Sample8x<Detail::NoAA>;
+
+// The default sample types for antialiased/non-antialiased modes.
+using SampleAA = Sample8xAA;
+using SampleNoAA = Sample2xNoAA;
+
+extern template class EdgeFlagPathRasterizer<Sample8xAA>;
+extern template class EdgeFlagPathRasterizer<Sample16xAA>;
+extern template class EdgeFlagPathRasterizer<Sample32xAA>;
+extern template class EdgeFlagPathRasterizer<Sample2xNoAA>;
+extern template class EdgeFlagPathRasterizer<Sample8xNoAA>;
 
 }

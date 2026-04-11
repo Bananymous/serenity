@@ -125,6 +125,8 @@ public:
     Color focus_outline() const { return color(ColorRole::FocusOutline); }
     Color tray() const { return color(ColorRole::Tray); }
     Color tray_text() const { return color(ColorRole::TrayText); }
+    Color overlay_background() const { return color(ColorRole::OverlayBackground); }
+    Color overlay_text() const { return color(ColorRole::OverlayText); }
 
     Color link() const { return color(ColorRole::Link); }
     Color active_link() const { return color(ColorRole::ActiveLink); }
@@ -191,6 +193,7 @@ public:
     ByteString taskbar_shadow_path() const { return path(PathRole::TaskbarShadow); }
     ByteString tooltip_shadow_path() const { return path(PathRole::TooltipShadow); }
     ByteString color_scheme_path() const { return path(PathRole::ColorScheme); }
+    ByteString overlay_rect_shadow_path() const { return path(PathRole::OverlayRectShadow); }
 
     Color color(ColorRole role) const { return m_impl->color(role); }
     Gfx::TextAlignment alignment(AlignmentRole role) const { return m_impl->alignment(role); }

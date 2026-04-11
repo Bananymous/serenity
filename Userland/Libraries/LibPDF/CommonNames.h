@@ -17,6 +17,7 @@
     X(AntiAlias)                  \
     X(Author)                     \
     X(BBox)                       \
+    X(BC)                         \
     X(BG)                         \
     X(BG2)                        \
     X(BM)                         \
@@ -42,9 +43,13 @@
     X(CIDFontType2)               \
     X(CIDSystemInfo)              \
     X(CIDToGIDMap)                \
+    X(CS)                         \
     X(CalGray)                    \
     X(CalRGB)                     \
     X(CharProcs)                  \
+    X(Color)                      \
+    X(ColorBurn)                  \
+    X(ColorDodge)                 \
     X(ColorSpace)                 \
     X(Colors)                     \
     X(Columns)                    \
@@ -60,6 +65,7 @@
     X(DW)                         \
     X(DW2)                        \
     X(DamagedRowsBeforeError)     \
+    X(Darken)                     \
     X(Decode)                     \
     X(DecodeParms)                \
     X(DescendantFonts)            \
@@ -69,6 +75,7 @@
     X(DeviceGray)                 \
     X(DeviceN)                    \
     X(DeviceRGB)                  \
+    X(Difference)                 \
     X(Differences)                \
     X(Domain)                     \
     X(E)                          \
@@ -80,6 +87,7 @@
     X(EncryptMetadata)            \
     X(EndOfBlock)                 \
     X(EndOfLine)                  \
+    X(Exclusion)                  \
     X(ExtGState)                  \
     X(Extend)                     \
     X(F)                          \
@@ -103,16 +111,22 @@
     X(FontFile2)                  \
     X(FontFile3)                  \
     X(FontMatrix)                 \
-    X(FunctionType)               \
     X(Function)                   \
+    X(FunctionType)               \
     X(Functions)                  \
+    X(G)                          \
     X(Gamma)                      \
+    X(Group)                      \
     X(H)                          \
     X(HT)                         \
     X(HTO)                        \
+    X(HardLight)                  \
     X(Height)                     \
+    X(Hue)                        \
+    X(I)                          \
     X(ICCBased)                   \
     X(ID)                         \
+    X(Identity)                   \
     X(Image)                      \
     X(ImageMask)                  \
     X(Index)                      \
@@ -137,17 +151,22 @@
     X(Length1)                    \
     X(Length2)                    \
     X(Length3)                    \
+    X(Lighten)                    \
     X(Limits)                     \
     X(Linearized)                 \
+    X(Luminosity)                 \
     X(ML)                         \
     X(Mask)                       \
     X(Matrix)                     \
     X(MediaBox)                   \
     X(MissingWidth)               \
     X(ModDate)                    \
+    X(Multiply)                   \
     X(N)                          \
     X(Names)                      \
     X(Next)                       \
+    X(None)                       \
+    X(Normal)                     \
     X(O)                          \
     X(OE)                         \
     X(OP)                         \
@@ -155,10 +174,13 @@
     X(Order)                      \
     X(Ordering)                   \
     X(Outlines)                   \
+    X(Overlay)                    \
     X(P)                          \
     X(Pages)                      \
+    X(PaintType)                  \
     X(Parent)                     \
     X(Pattern)                    \
+    X(PatternType)                \
     X(Perms)                      \
     X(Predictor)                  \
     X(Prev)                       \
@@ -169,18 +191,21 @@
     X(Registry)                   \
     X(Resources)                  \
     X(Root)                       \
-    X(Rows)                       \
     X(Rotate)                     \
+    X(Rows)                       \
     X(RunLengthDecode)            \
     X(S)                          \
     X(SA)                         \
     X(SM)                         \
     X(SMask)                      \
     X(SMaskInData)                \
+    X(Saturation)                 \
+    X(Screen)                     \
     X(Separation)                 \
     X(Shading)                    \
     X(ShadingType)                \
     X(Size)                       \
+    X(SoftLight)                  \
     X(StmF)                       \
     X(StrF)                       \
     X(Subject)                    \
@@ -192,6 +217,7 @@
     X(TR2)                        \
     X(Title)                      \
     X(ToUnicode)                  \
+    X(Transparency)               \
     X(Type)                       \
     X(Type1C)                     \
     X(U)                          \

@@ -33,11 +33,11 @@
 
 namespace Kernel {
 
-static Singleton<SpinlockProtected<Thread::GlobalList, LockRank::None>> s_list;
+static Singleton<RecursiveSpinlockProtected<Thread::GlobalList, LockRank::None>> s_thread_list;
 
-SpinlockProtected<Thread::GlobalList, LockRank::None>& Thread::all_instances()
+RecursiveSpinlockProtected<Thread::GlobalList, LockRank::None>& Thread::all_instances()
 {
-    return *s_list;
+    return *s_thread_list;
 }
 
 ErrorOr<NonnullRefPtr<Thread>> Thread::create(NonnullRefPtr<Process> process)
@@ -132,16 +132,10 @@ Thread::BlockResult Thread::block_impl(BlockTimeout const& timeout, Blocker& blo
     Atomic<bool, AK::MemoryOrder::memory_order_relaxed> timeout_unblocked(false);
     bool timer_was_added = false;
 
-    switch (state()) {
-    case Thread::State::Stopped:
-        // It's possible that we were requested to be stopped!
-        break;
-    case Thread::State::Running:
-        VERIFY(m_blocker == nullptr);
-        break;
-    default:
-        VERIFY_NOT_REACHED();
-    }
+    if (state() != Thread::State::Running)
+        PANIC("Attempting to block with invalid thread state - {}", state_string());
+
+    VERIFY(m_blocker == nullptr);
 
     m_blocker = &blocker;
 
@@ -229,17 +223,10 @@ void Thread::block(Kernel::Mutex& lock, SpinlockLocker<Spinlock<LockRank::None>>
     SpinlockLocker scheduler_lock(g_scheduler_lock);
     SpinlockLocker block_lock(m_block_lock);
 
-    switch (state()) {
-    case Thread::State::Stopped:
-        // It's possible that we were requested to be stopped!
-        break;
-    case Thread::State::Running:
-        VERIFY(m_blocker == nullptr);
-        break;
-    default:
-        dbgln("Error: Attempting to block with invalid thread state - {}", state_string());
-        VERIFY_NOT_REACHED();
-    }
+    if (state() != Thread::State::Running)
+        PANIC("Attempting to block with invalid thread state - {}", state_string());
+
+    VERIFY(m_blocker == nullptr);
 
     // If we're blocking on the big-lock we may actually be in the process
     // of unblocking from another lock. If that's the case m_blocking_mutex
@@ -317,7 +304,7 @@ void Thread::unblock_from_blocker(Blocker& blocker)
         VERIFY(!is_stopped());
         unblock();
     };
-    if (Processor::current_in_irq() != 0) {
+    if (Processor::current_in_irq()) {
         Processor::deferred_call_queue([do_unblock = move(do_unblock), self = try_make_weak_ptr().release_value_but_fixme_should_propagate_errors()]() {
             if (auto this_thread = self.strong_ref())
                 do_unblock();
@@ -336,24 +323,26 @@ void Thread::unblock(u8 signal)
         return;
     if (m_blocking_mutex)
         return;
-    VERIFY(m_blocker);
-    if (signal != 0) {
-        if (is_handling_page_fault()) {
-            // Don't let signals unblock threads that are blocked inside a page fault handler.
-            // This prevents threads from EINTR'ing the inode read in an inode page fault.
-            // FIXME: There's probably a better way to solve this.
-            return;
+    if (m_blocker) {
+        if (signal != 0) {
+            if (is_handling_page_fault()) {
+                // Don't let signals unblock threads that are blocked inside a page fault handler.
+                // This prevents threads from EINTR'ing the inode read in an inode page fault.
+                // FIXME: There's probably a better way to solve this.
+                return;
+            }
+            if (!m_blocker->can_be_interrupted() && !m_should_die)
+                return;
+            m_blocker->set_interrupted_by_signal(signal);
         }
-        if (!m_blocker->can_be_interrupted() && !m_should_die)
-            return;
-        m_blocker->set_interrupted_by_signal(signal);
+        m_blocker = nullptr;
+    } else {
+        m_was_interrupted = true;
     }
-    m_blocker = nullptr;
     if (Thread::current() == this) {
         set_state(Thread::State::Running);
         return;
     }
-    VERIFY(m_state != Thread::State::Runnable && m_state != Thread::State::Running);
     set_state(Thread::State::Runnable);
 }
 
@@ -411,20 +400,10 @@ void Thread::die_if_needed()
         set_state(Thread::State::Dying);
     }
 
-    ScopedCritical critical;
-
-    // Flag a context switch. Because we're in a critical section,
-    // Scheduler::yield will actually only mark a pending context switch
-    // Simply leaving the critical section would not necessarily trigger
-    // a switch.
+    VERIFY(!Processor::current_in_irq());
+    VERIFY(Processor::in_critical() == 0);
     Scheduler::yield();
 
-    // Now leave the critical section so that we can also trigger the
-    // actual context switch
-    Processor::clear_critical();
-    dbgln("die_if_needed returned from clear_critical!!! in irq: {}", Processor::current_in_irq());
-    // We should never get here, but the scoped scheduler lock
-    // will be released by Scheduler::context_switch again
     VERIFY_NOT_REACHED();
 }
 
@@ -502,9 +481,9 @@ auto Thread::sleep_until(clockid_t clock_id, Duration const& deadline) -> BlockR
     return Thread::current()->block<Thread::SleepBlocker>({}, Thread::BlockTimeout(true, &deadline, nullptr, clock_id));
 }
 
-StringView Thread::state_string() const
+StringView Thread::state_string(Thread::State state)
 {
-    switch (state()) {
+    switch (state) {
     case Thread::State::Invalid:
         return "Invalid"sv;
     case Thread::State::Runnable:
@@ -517,16 +496,23 @@ StringView Thread::state_string() const
         return "Dead"sv;
     case Thread::State::Stopped:
         return "Stopped"sv;
-    case Thread::State::Blocked: {
+    case Thread::State::Blocked:
+        return "Blocked"sv;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+StringView Thread::state_string() const
+{
+    auto thread_state = state();
+    if (thread_state == Thread::State::Blocked) {
         SpinlockLocker block_lock(m_block_lock);
         if (m_blocking_mutex)
             return "Mutex"sv;
         if (m_blocker)
             return m_blocker->state_string();
-        VERIFY_NOT_REACHED();
     }
-    }
-    PANIC("Thread::state_string(): Invalid state: {}", (int)state());
+    return state_string(thread_state);
 }
 
 void Thread::finalize()
@@ -581,8 +567,11 @@ void Thread::finalize_dying_threads()
             auto result = dying_threads.try_append(&thread);
             // We ignore allocation failures above the first 32 guaranteed thread slots, and
             // just flag our future-selves to finalize these threads at a later point
-            if (result.is_error())
-                g_finalizer_has_work.store(true, AK::MemoryOrder::memory_order_release);
+            if (result.is_error()) {
+                g_finalizer_has_work.with([](bool& has_work) {
+                    has_work = true;
+                });
+            }
         });
     }
     for (auto* thread : dying_threads) {
@@ -779,16 +768,6 @@ DispatchSignalResult Thread::dispatch_one_pending_signal()
     return dispatch_signal(signal);
 }
 
-DispatchSignalResult Thread::try_dispatch_one_pending_signal(u8 signal)
-{
-    VERIFY(signal != 0);
-    SpinlockLocker scheduler_lock(g_scheduler_lock);
-    u32 signal_candidates = pending_signals_for_state() & ~m_signal_mask;
-    if ((signal_candidates & (1 << (signal - 1))) == 0)
-        return DispatchSignalResult::Continue;
-    return dispatch_signal(signal);
-}
-
 enum class DefaultSignalAction {
     Terminate,
     Ignore,
@@ -889,21 +868,10 @@ static ErrorOr<void> copy_value_on_user_stack(FlatPtr& stack, T const& data)
 
 void Thread::resume_from_stopped()
 {
-    VERIFY(is_stopped());
-    VERIFY(m_stop_state != State::Invalid);
     VERIFY(g_scheduler_lock.is_locked_by_current_processor());
-    if (m_stop_state == Thread::State::Blocked) {
-        SpinlockLocker block_lock(m_block_lock);
-        if (m_blocker || m_blocking_mutex) {
-            // Hasn't been unblocked yet
-            set_state(Thread::State::Blocked, 0);
-        } else {
-            // Was unblocked while stopped
-            set_state(Thread::State::Runnable);
-        }
-    } else {
-        set_state(m_stop_state, 0);
-    }
+    VERIFY(is_stopped());
+
+    set_state(Thread::State::Runnable, 0);
 }
 
 DispatchSignalResult Thread::dispatch_signal(u8 signal)
@@ -1203,36 +1171,23 @@ ErrorOr<NonnullRefPtr<Thread>> Thread::clone(NonnullRefPtr<Process> process)
     auto clone = TRY(Thread::create(move(process)));
     m_signal_action_masks.span().copy_to(clone->m_signal_action_masks);
     clone->m_signal_mask = m_signal_mask;
-    clone->m_fpu_state = m_fpu_state;
     clone->m_arch_specific_data = m_arch_specific_data;
     return clone;
 }
 
 void Thread::set_state(State new_state, u8 stop_signal)
 {
-    State previous_state;
     VERIFY(g_scheduler_lock.is_locked_by_current_processor());
     if (new_state == m_state)
-        return;
+        PANIC("Thread {} is already {}", *this, state_string());
 
-    {
-        previous_state = m_state;
-        if (previous_state == Thread::State::Invalid) {
-            // If we were *just* created, we may have already pending signals
-            if (has_unmasked_pending_signals()) {
-                dbgln_if(THREAD_DEBUG, "Dispatch pending signals to new thread {}", *this);
-                dispatch_one_pending_signal();
-            }
-        }
-
-        m_state = new_state;
-        dbgln_if(THREAD_DEBUG, "Set thread {} state to {}", *this, state_string());
-    }
+    State previous_state = m_state;
+    m_state = new_state;
+    dbgln_if(THREAD_DEBUG, "Set thread {} state to {}", *this, state_string());
 
     if (previous_state == Thread::State::Runnable) {
         Scheduler::dequeue_runnable_thread(*this);
     } else if (previous_state == Thread::State::Stopped) {
-        m_stop_state = State::Invalid;
         auto& process = this->process();
         if (process.set_stopped(false)) {
             process.for_each_thread([&](auto& thread) {
@@ -1255,8 +1210,9 @@ void Thread::set_state(State new_state, u8 stop_signal)
         Scheduler::enqueue_runnable_thread(*this);
         Processor::smp_wake_n_idle_processors(1);
     } else if (m_state == Thread::State::Stopped) {
-        // We don't want to restore to Running state, only Runnable!
-        m_stop_state = previous_state != Thread::State::Running ? previous_state : Thread::State::Runnable;
+        if (previous_state != Thread::State::Running)
+            PANIC("Attempting to stop with invalid thread state - {}", state_string(previous_state));
+
         auto& process = this->process();
         if (!process.set_stopped(true)) {
             // Note that we don't explicitly stop peer threads, we let them stop on their own the next time they

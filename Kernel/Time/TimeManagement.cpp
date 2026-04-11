@@ -23,6 +23,7 @@
 #    include <Kernel/Arch/aarch64/Time/PL031.h>
 #elif ARCH(RISCV64)
 #    include <Kernel/Arch/riscv64/Timer.h>
+#    include <Kernel/Devices/Time/GoldfishRTC.h>
 #else
 #    error Unknown architecture
 #endif
@@ -41,7 +42,7 @@
 
 namespace Kernel {
 
-static NeverDestroyed<Vector<DeviceTree::DeviceRecipe<NonnullLockRefPtr<HardwareTimerBase>>>> s_recipes;
+static NeverDestroyed<Vector<NonnullLockRefPtr<HardwareTimerBase>>> s_hardware_timers;
 static Singleton<TimeManagement> s_the;
 
 bool TimeManagement::is_initialized()
@@ -54,13 +55,13 @@ TimeManagement& TimeManagement::the()
     return *s_the;
 }
 
-void TimeManagement::add_recipe(DeviceTree::DeviceRecipe<NonnullLockRefPtr<HardwareTimerBase>> recipe)
+ErrorOr<void> TimeManagement::register_hardware_timer(NonnullLockRefPtr<HardwareTimerBase> timer)
 {
     // This function has to be called before TimeManagement is initialized,
     // as we do not support dynamic registration of timers.
     VERIFY(!is_initialized());
 
-    s_recipes->append(move(recipe));
+    return s_hardware_timers->try_append(move(timer));
 }
 
 // The s_scheduler_specific_current_time function provides a current time for scheduling purposes,
@@ -269,8 +270,10 @@ UnixDateTime TimeManagement::boot_time()
         return UnixDateTime::epoch();
     return rtc->boot_time();
 #elif ARCH(RISCV64)
-    // FIXME: Return correct boot time
-    return UnixDateTime::epoch();
+    auto rtc = GoldfishRTC::the();
+    if (!rtc)
+        return UnixDateTime::epoch();
+    return rtc->boot_time();
 #else
 #    error Unknown architecture
 #endif
@@ -312,6 +315,9 @@ UNMAP_AFTER_INIT TimeManagement::TimeManagement()
         m_epoch_time += boot_time().offset_to_epoch();
     probe_and_set_aarch64_hardware_timers();
 #elif ARCH(RISCV64)
+    auto rtc = GoldfishRTC::the();
+    if (rtc)
+        m_epoch_time += boot_time().offset_to_epoch();
     probe_and_set_riscv64_hardware_timers();
 #else
 #    error Unknown architecture
@@ -328,9 +334,9 @@ UNMAP_AFTER_INIT Vector<HardwareTimerBase*> TimeManagement::scan_and_initialize_
     bool should_enable = is_hpet_periodic_mode_allowed();
     dbgln("Duration: Scanning for periodic timers");
     Vector<HardwareTimerBase*> timers;
-    for (auto& hardware_timer : m_hardware_timers) {
+    for (auto& hardware_timer : *s_hardware_timers) {
         if (hardware_timer->is_periodic_capable()) {
-            timers.append(hardware_timer);
+            timers.try_append(hardware_timer).release_value_but_fixme_should_propagate_errors();
             if (should_enable)
                 hardware_timer->set_periodic();
         }
@@ -342,9 +348,9 @@ UNMAP_AFTER_INIT Vector<HardwareTimerBase*> TimeManagement::scan_for_non_periodi
 {
     dbgln("Duration: Scanning for non-periodic timers");
     Vector<HardwareTimerBase*> timers;
-    for (auto& hardware_timer : m_hardware_timers) {
+    for (auto& hardware_timer : *s_hardware_timers) {
         if (!hardware_timer->is_periodic_capable())
-            timers.append(hardware_timer);
+            timers.try_append(hardware_timer).release_value_but_fixme_should_propagate_errors();
     }
     return timers;
 }
@@ -375,7 +381,7 @@ UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_x86_non_legacy_hardware_time
     dbgln("HPET: Setting appropriate functions to timers.");
 
     for (auto& hpet_comparator : HPET::the().comparators())
-        m_hardware_timers.append(hpet_comparator);
+        s_hardware_timers->try_append(hpet_comparator).release_value_but_fixme_should_propagate_errors();
 
     auto periodic_timers = scan_and_initialize_periodic_timers();
     auto non_periodic_timers = scan_for_non_periodic_timers();
@@ -447,10 +453,11 @@ UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_x86_legacy_hardware_timers()
         }
     }
 
-    m_hardware_timers.append(PIT::initialize(TimeManagement::update_time));
-    m_hardware_timers.append(RealTimeClock::create(TimeManagement::system_timer_tick));
-    m_time_keeper_timer = m_hardware_timers[0];
-    m_system_timer = m_hardware_timers[1];
+    VERIFY(s_hardware_timers->is_empty());
+    s_hardware_timers->try_append(PIT::initialize(TimeManagement::update_time)).release_value_but_fixme_should_propagate_errors();
+    s_hardware_timers->try_append(RealTimeClock::create(TimeManagement::system_timer_tick)).release_value_but_fixme_should_propagate_errors();
+    m_time_keeper_timer = (*s_hardware_timers)[0];
+    m_system_timer = (*s_hardware_timers)[1];
 
     // The timer is only as accurate as the interrupts...
     m_time_ticks_per_second = m_time_keeper_timer->ticks_per_second();
@@ -490,21 +497,11 @@ void TimeManagement::increment_time_since_boot_hpet()
 #elif ARCH(AARCH64)
 UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_aarch64_hardware_timers()
 {
-    for (auto& recipe : *s_recipes) {
-        auto device_or_error = recipe.create_device();
-        if (device_or_error.is_error()) {
-            dmesgln("TimeManagement: Failed to create timer for device \"{}\" with driver {}: {}", recipe.node_name, recipe.driver_name, device_or_error.release_error());
-            continue;
-        }
-
-        m_hardware_timers.append(device_or_error.release_value());
-    }
-
-    if (m_hardware_timers.is_empty())
-        PANIC("TimeManagement: No supported timer found in devicetree");
+    if (s_hardware_timers->is_empty())
+        PANIC("TimeManagement: No supported timer was found");
 
     // TODO: Use some kind of heuristic to decide which timer to use.
-    m_system_timer = m_hardware_timers.last();
+    m_system_timer = s_hardware_timers->last();
     dbgln("TimeManagement: System timer: {}", m_system_timer->model());
 
     m_time_ticks_per_second = m_system_timer->ticks_per_second();
@@ -542,8 +539,8 @@ UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_aarch64_hardware_timers()
 #elif ARCH(RISCV64)
 UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_riscv64_hardware_timers()
 {
-    m_hardware_timers.append(RISCV64::Timer::initialize());
-    m_system_timer = m_hardware_timers[0];
+    MUST(s_hardware_timers->try_append(RISCV64::Timer::initialize()));
+    m_system_timer = (*s_hardware_timers)[0];
     m_time_ticks_per_second = m_system_timer->ticks_per_second();
 
     m_system_timer->set_callback([this]() {
@@ -604,10 +601,7 @@ void TimeManagement::increment_time_since_boot()
 
 void TimeManagement::system_timer_tick()
 {
-    if (Processor::current_in_irq() <= 1) {
-        // Don't expire timers while handling IRQs
-        TimerQueue::the().fire();
-    }
+    TimerQueue::the().fire();
     Scheduler::timer_tick();
 }
 

@@ -157,6 +157,7 @@ public:
     friend class Thread;
     friend class Coredump;
     friend class ScopedProcessList;
+    friend class AfterExecResource;
 
     auto with_protected_data(auto&& callback) const
     {
@@ -217,12 +218,12 @@ public:
     }
 
     static ErrorOr<ProcessAndFirstThread> create_kernel_process(StringView name, void (*entry)(void*), void* entry_data = nullptr, u32 affinity = THREAD_AFFINITY_DEFAULT, RegisterProcess do_register = RegisterProcess::Yes);
-    static ErrorOr<ProcessAndFirstThread> create_user_process(StringView path, UserID, GroupID, Vector<NonnullOwnPtr<KString>> arguments, Vector<NonnullOwnPtr<KString>> environment, NonnullRefPtr<VFSRootContext>, NonnullRefPtr<HostnameContext>, RefPtr<TTY>);
+    static ErrorOr<ProcessAndFirstThread> create_userland_init_process(StringView path, Vector<NonnullOwnPtr<KString>> arguments, NonnullRefPtr<VFSRootContext>, NonnullRefPtr<HostnameContext>, RefPtr<TTY>);
     static void register_new(Process&);
 
     ~Process();
 
-    virtual void remove_from_secondary_lists();
+    void remove_from_secondary_lists();
 
     template<typename EntryFunction>
     ErrorOr<NonnullRefPtr<Thread>> create_kernel_thread(StringView name, EntryFunction entry, u32 priority = THREAD_PRIORITY_NORMAL, u32 affinity = THREAD_AFFINITY_DEFAULT, bool joinable = true)
@@ -264,7 +265,7 @@ public:
     static SessionID get_sid_from_pgid(ProcessGroupID pgid);
 
     using Name = FixedStringBuffer<32>;
-    SpinlockProtected<Name, LockRank::None> const& name() const;
+    RecursiveSpinlockProtected<Name, LockRank::None> const& name() const;
     void set_name(StringView);
 
     ProcessID pid() const
@@ -376,7 +377,7 @@ public:
     ErrorOr<FlatPtr> sys$close(int fd);
     ErrorOr<FlatPtr> sys$read(int fd, Userspace<u8*>, size_t);
     ErrorOr<FlatPtr> sys$pread(int fd, Userspace<u8*>, size_t, off_t);
-    ErrorOr<FlatPtr> sys$readv(int fd, Userspace<const struct iovec*> iov, int iov_count);
+    ErrorOr<FlatPtr> sys$preadv(int fd, Userspace<const struct iovec*> iov, int iov_count, off_t);
     ErrorOr<FlatPtr> sys$write(int fd, Userspace<u8 const*>, size_t);
     ErrorOr<FlatPtr> sys$pwritev(int fd, Userspace<const struct iovec*> iov, int iov_count, off_t);
     ErrorOr<FlatPtr> sys$fstat(int fd, Userspace<stat*>);
@@ -489,6 +490,7 @@ public:
     ErrorOr<FlatPtr> sys$unveil(Userspace<Syscall::SC_unveil_params const*>);
     ErrorOr<FlatPtr> sys$perf_event(int type, FlatPtr arg1, FlatPtr arg2);
     ErrorOr<FlatPtr> sys$perf_register_string(Userspace<char const*>, size_t);
+    ErrorOr<FlatPtr> sys$posix_spawn(Userspace<Syscall::SC_posix_spawn_params const*> user_params);
     ErrorOr<FlatPtr> sys$get_stack_bounds(Userspace<FlatPtr*> stack_base, Userspace<size_t*> stack_size);
     ErrorOr<FlatPtr> sys$ptrace(Userspace<Syscall::SC_ptrace_params const*>);
     ErrorOr<FlatPtr> sys$sendfd(int sockfd, int fd);
@@ -503,9 +505,10 @@ public:
     ErrorOr<FlatPtr> sys$get_root_session_id(pid_t force_sid);
     ErrorOr<FlatPtr> sys$remount(Userspace<Syscall::SC_remount_params const*> user_params);
     ErrorOr<FlatPtr> sys$bindmount(Userspace<Syscall::SC_bindmount_params const*> user_params);
-    ErrorOr<FlatPtr> sys$archctl(int option, FlatPtr arg1);
+    ErrorOr<FlatPtr> sys$archctl(int option, FlatPtr arg1, FlatPtr arg2, FlatPtr arg3);
     ErrorOr<FlatPtr> sys$unshare_create(Userspace<Syscall::SC_unshare_create_params const*>);
-    ErrorOr<FlatPtr> sys$unshare_attach(Userspace<Syscall::SC_unshare_attach_params const*>);
+    ErrorOr<FlatPtr> sys$unshare_enter(Userspace<Syscall::SC_unshare_enter_params const*>);
+    ErrorOr<FlatPtr> sys$unshare_open(Userspace<Syscall::SC_unshare_open_params const*>);
 
     enum SockOrPeerName {
         SockName,
@@ -540,7 +543,7 @@ public:
     Vector<NonnullOwnPtr<KString>> const& arguments() const { return m_arguments; }
     Vector<NonnullOwnPtr<KString>> const& environment() const { return m_environment; }
 
-    ErrorOr<void> exec(NonnullOwnPtr<KString> path, Vector<NonnullOwnPtr<KString>> arguments, Vector<NonnullOwnPtr<KString>> environment, Thread*& new_main_thread, InterruptsState& previous_interrupts_state, int recursion_depth = 0);
+    ErrorOr<void> exec(NonnullOwnPtr<KString> path, Vector<NonnullOwnPtr<KString>> arguments, Vector<NonnullOwnPtr<KString>> environment, Thread*& new_main_thread, InterruptsState& previous_interrupts_state, ProcessEventType event_type = ProcessEventType::Exec, int recursion_depth = 0);
 
     ErrorOr<LoadResult> load(Memory::AddressSpace& new_space, NonnullRefPtr<OpenFileDescription> main_program_description, RefPtr<OpenFileDescription> interpreter_description, Elf_Ehdr const& main_program_header, Optional<size_t> minimum_stack_size = {});
 
@@ -637,8 +640,8 @@ public:
     PerformanceEventBuffer* perf_events() { return m_perf_event_buffer; }
     PerformanceEventBuffer const* perf_events() const { return m_perf_event_buffer; }
 
-    SpinlockProtected<OwnPtr<Memory::AddressSpace>, LockRank::None>& address_space() { return m_space; }
-    SpinlockProtected<OwnPtr<Memory::AddressSpace>, LockRank::None> const& address_space() const { return m_space; }
+    RecursiveSpinlockProtected<OwnPtr<Memory::AddressSpace>, LockRank::None>& address_space() { return m_space; }
+    RecursiveSpinlockProtected<OwnPtr<Memory::AddressSpace>, LockRank::None> const& address_space() const { return m_space; }
 
     VirtualAddress signal_trampoline() const
     {
@@ -694,12 +697,24 @@ private:
     friend class Region;
     friend class PerformanceManager;
 
+    bool is_fully_initialized() const
+    {
+        // A process is considered fully initialized once Process::register_new() has added it to the global process list.
+        return m_all_processes_list_node.is_in_list();
+    }
+
     bool add_thread(Thread&);
     bool remove_thread(Thread&);
 
     Process(StringView name, NonnullRefPtr<Credentials>, ProcessID ppid, bool is_kernel_process, NonnullRefPtr<VFSRootContext>, NonnullRefPtr<HostnameContext>, RefPtr<Custody> current_directory, RefPtr<Custody> executable, RefPtr<TTY> tty, UnveilNode unveil_tree, UnveilNode exec_unveil_tree, UnixDateTime creation_time);
-    static ErrorOr<ProcessAndFirstThread> create_with_forked_name(UserID, GroupID, ProcessID ppid, bool is_kernel_process, NonnullRefPtr<VFSRootContext> vfs_root_context, NonnullRefPtr<HostnameContext>, RefPtr<Custody> current_directory = nullptr, RefPtr<Custody> executable = nullptr, RefPtr<TTY> = nullptr, Process* fork_parent = nullptr);
-    static ErrorOr<ProcessAndFirstThread> create(StringView name, UserID, GroupID, ProcessID ppid, bool is_kernel_process, NonnullRefPtr<VFSRootContext> vfs_root_context, NonnullRefPtr<HostnameContext>, RefPtr<Custody> current_directory = nullptr, RefPtr<Custody> executable = nullptr, RefPtr<TTY> = nullptr, Process* fork_parent = nullptr);
+    static ErrorOr<ProcessAndFirstThread> create_from_fork(Process& parent);
+    static ErrorOr<ProcessAndFirstThread> create_spawned(UserID, GroupID, ProcessID ppid, NonnullRefPtr<VFSRootContext> vfs_root_context, NonnullRefPtr<HostnameContext>, NonnullRefPtr<Custody> current_directory, RefPtr<TTY>);
+    static ErrorOr<ProcessAndFirstThread> create_impl(StringView name, UserID, GroupID, ProcessID ppid, bool is_kernel_process, NonnullRefPtr<VFSRootContext> vfs_root_context, NonnullRefPtr<HostnameContext>, RefPtr<Custody> current_directory = nullptr, RefPtr<Custody> executable = nullptr, RefPtr<TTY> = nullptr, Process* fork_parent = nullptr);
+    // After calling one of the create_* function, you need to commit the creation of the process.
+    // You have to make sure that nothing will fail after calling this function otherwise the
+    // process will be leaked.
+    static void commit_creation(NonnullRefPtr<Process>&);
+
     ErrorOr<NonnullRefPtr<Thread>> attach_resources(NonnullOwnPtr<Memory::AddressSpace>&&, Process* fork_parent);
     static ProcessID allocate_pid();
 
@@ -710,7 +725,9 @@ private:
     bool create_perf_events_buffer_if_needed();
     void delete_perf_events_buffer();
 
-    ErrorOr<void> do_exec(NonnullRefPtr<OpenFileDescription> main_program_description, Vector<NonnullOwnPtr<KString>> arguments, Vector<NonnullOwnPtr<KString>> environment, RefPtr<OpenFileDescription> interpreter_description, Thread*& new_main_thread, InterruptsState& previous_interrupts_state, Elf_Ehdr const& main_program_header, Optional<size_t> minimum_stack_size = {});
+    ErrorOr<void> do_exec(NonnullRefPtr<OpenFileDescription> main_program_description, Vector<NonnullOwnPtr<KString>> arguments,
+        Vector<NonnullOwnPtr<KString>> environment, RefPtr<OpenFileDescription> interpreter_description, Thread*& new_main_thread,
+        InterruptsState& previous_interrupts_state, Elf_Ehdr const& main_program_header, ProcessEventType, Optional<size_t> minimum_stack_size = {});
     ErrorOr<FlatPtr> do_write(OpenFileDescription&, UserOrKernelBuffer const&, size_t, Optional<off_t> = {});
 
     ErrorOr<FlatPtr> do_statvfs(FileSystem const& path, Custody const*, statvfs* buf);
@@ -740,7 +757,7 @@ private:
     ErrorOr<FlatPtr> close_impl(int fd);
     ErrorOr<FlatPtr> read_impl(int fd, Userspace<u8*> buffer, size_t size);
     ErrorOr<FlatPtr> pread_impl(int fd, Userspace<u8*>, size_t, off_t);
-    ErrorOr<FlatPtr> readv_impl(int fd, Userspace<const struct iovec*> iov, int iov_count);
+    ErrorOr<FlatPtr> preadv_impl(int fd, Userspace<const struct iovec*> iov, int iov_count, off_t);
 
 public:
     ErrorOr<void> traverse_as_directory(FileSystemID, Function<ErrorOr<void>(FileSystem::DirectoryEntryView const&)> callback) const;
@@ -774,9 +791,9 @@ private:
         return nullptr;
     }
 
-    SpinlockProtected<Name, LockRank::None> m_name;
+    RecursiveSpinlockProtected<Name, LockRank::None> m_name;
 
-    SpinlockProtected<OwnPtr<Memory::AddressSpace>, LockRank::None> m_space;
+    RecursiveSpinlockProtected<OwnPtr<Memory::AddressSpace>, LockRank::None> m_space;
 
     RecursiveSpinlock<LockRank::None> mutable m_protected_data_lock;
     AtomicEdgeAction<u32> m_protected_data_refs;
@@ -945,8 +962,6 @@ public:
     ErrorOr<NonnullRefPtr<Custody>> custody_for_dirfd(Badge<CustodyBase>, int dirfd);
 
 private:
-    ErrorOr<NonnullRefPtr<ScopedProcessList>> scoped_process_list_for_id(int id);
-
     ErrorOr<NonnullRefPtr<Custody>> custody_for_dirfd(int dirfd);
 
     ErrorOr<NonnullRefPtr<VFSRootContext>> vfs_root_context_for_id(int id);
@@ -958,13 +973,13 @@ private:
     };
     ErrorOr<MountTargetContext> context_for_mount_operation(int vfs_root_context_id, StringView path);
 
-    SpinlockProtected<Thread::ListInProcess, LockRank::None>& thread_list() { return m_thread_list; }
-    SpinlockProtected<Thread::ListInProcess, LockRank::None> const& thread_list() const { return m_thread_list; }
+    RecursiveSpinlockProtected<Thread::ListInProcess, LockRank::None>& thread_list() { return m_thread_list; }
+    RecursiveSpinlockProtected<Thread::ListInProcess, LockRank::None> const& thread_list() const { return m_thread_list; }
 
     ErrorOr<NonnullRefPtr<Thread>> get_thread_from_pid_or_tid(pid_t pid_or_tid, Syscall::SchedulerParametersMode mode);
     ErrorOr<NonnullRefPtr<Thread>> get_thread_from_thread_list(pid_t tid);
 
-    SpinlockProtected<Thread::ListInProcess, LockRank::None> m_thread_list {};
+    RecursiveSpinlockProtected<Thread::ListInProcess, LockRank::None> m_thread_list {};
 
     MutexProtected<OpenFileDescriptions> m_fds;
 
@@ -978,9 +993,9 @@ private:
     KCOVInstance* m_kcov_instance { nullptr };
 #endif
 
-    SpinlockProtected<RefPtr<Custody>, LockRank::None> m_executable;
+    RecursiveSpinlockProtected<RefPtr<Custody>, LockRank::None> m_executable;
 
-    SpinlockProtected<RefPtr<Custody>, LockRank::None> m_current_directory;
+    RecursiveSpinlockProtected<RefPtr<Custody>, LockRank::None> m_current_directory;
 
     UnixDateTime const m_creation_time;
 
@@ -994,19 +1009,71 @@ public:
     using AllProcessesList = IntrusiveListRelaxedConst<&Process::m_all_processes_list_node>;
 
 private:
-    SpinlockProtected<RefPtr<ScopedProcessList>, LockRank::None> m_scoped_process_list;
+    RecursiveSpinlockProtected<RefPtr<ScopedProcessList>, LockRank::None> m_scoped_process_list;
 
-    SpinlockProtected<RefPtr<VFSRootContext>, LockRank::Process> m_attached_vfs_root_context;
+    RecursiveSpinlockProtected<RefPtr<VFSRootContext>, LockRank::Process> m_attached_vfs_root_context;
 
-    SpinlockProtected<RefPtr<HostnameContext>, LockRank::Process> m_attached_hostname_context;
+    RecursiveSpinlockProtected<RefPtr<HostnameContext>, LockRank::Process> m_attached_hostname_context;
+
+    void replace_vfs_root_context(VFSRootContext&);
+    void replace_hostname_context(HostnameContext&);
+    void replace_scoped_process_list(ScopedProcessList&);
+
+    template<typename T>
+    class AfterExecResource {
+    public:
+        void set(T& new_context)
+        {
+            m_resource.with([&new_context](auto& context) {
+                context = new_context;
+            });
+        }
+
+        void copy_from(AfterExecResource<T> const& other)
+        {
+            other.m_resource.with([this](auto& other_resource) {
+                this->m_resource.with([&other_resource](auto& resource) {
+                    resource = other_resource;
+                });
+            });
+        }
+
+        // FIXME: We should ideally have an internal Process& reference but
+        // for now this works OK too.
+        void replace_resource(Process& process)
+        {
+            m_resource.with([&process](auto& resource) {
+                // NOTE: a VFSRootContext and HostnameContext are always
+                // being set for a new Process but a ScopedProcessList could be a nullptr
+                // when the system boots. This if condition prevents userspace
+                // from removing the scoped process list, so once a program
+                // is inside such list, it cannot ever change it, even if it's
+                // not jailed. Whether that's a problem or not remains to be seen.
+                if (resource)
+                    process.replace_resource(*resource);
+                resource = nullptr;
+            });
+        }
+
+    private:
+        SpinlockProtected<RefPtr<T>, LockRank::None> m_resource;
+    };
+
+    void replace_resource(VFSRootContext&);
+    void replace_resource(HostnameContext&);
+    void replace_resource(ScopedProcessList&);
+
+    AfterExecResource<VFSRootContext> m_exec_vfs_root_context;
+    AfterExecResource<HostnameContext> m_exec_hostname_context;
+    AfterExecResource<ScopedProcessList> m_exec_scoped_process_list;
 
     Mutex m_big_lock { "Process"sv, Mutex::MutexBehavior::BigLock };
     Mutex m_ptrace_lock { "ptrace"sv };
 
-    SpinlockProtected<RefPtr<Timer>, LockRank::None> m_alarm_timer;
+    RecursiveSpinlockProtected<RefPtr<Timer>, LockRank::None> m_alarm_timer;
 
-    SpinlockProtected<UnveilData, LockRank::None> m_unveil_data;
-    SpinlockProtected<UnveilData, LockRank::None> m_exec_unveil_data;
+    RecursiveSpinlockProtected<UnveilData, LockRank::None> m_unveil_data;
+    RecursiveSpinlockProtected<UnveilData, LockRank::None> m_exec_unveil_data;
 
     OwnPtr<PerformanceEventBuffer> m_perf_event_buffer;
 
@@ -1022,7 +1089,7 @@ private:
         OwnPtr<KString> value;
     };
 
-    SpinlockProtected<Array<CoredumpProperty, 4>, LockRank::None> m_coredump_properties {};
+    RecursiveSpinlockProtected<Array<CoredumpProperty, 4>, LockRank::None> m_coredump_properties {};
     Vector<NonnullRefPtr<Thread>> m_threads_for_coredump;
 
     struct SignalActionData {
@@ -1037,7 +1104,7 @@ private:
     u8 m_protected_values_padding[PAGE_SIZE - sizeof(ProtectedValues)];
 
 public:
-    static SpinlockProtected<Process::AllProcessesList, LockRank::None>& all_instances();
+    static RecursiveSpinlockProtected<Process::AllProcessesList, LockRank::None>& all_instances();
 };
 
 // Note: Process object should be 2 pages of 4096 bytes each.

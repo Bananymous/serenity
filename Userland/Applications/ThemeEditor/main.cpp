@@ -28,7 +28,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto app = TRY(GUI::Application::create(arguments));
 
-    Config::pledge_domain("ThemeEditor");
+    Config::pledge_domains({ "ThemeEditor", "FileManager" });
     app->set_config_domain("ThemeEditor"_string);
 
     StringView file_to_edit;
@@ -43,9 +43,6 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         path = error_or_path.release_value();
 
     TRY(Core::System::pledge("stdio recvfd sendfd thread rpath unix"));
-    TRY(Core::System::unveil("/tmp/session/%sid/portal/filesystemaccess", "rw"));
-    TRY(Core::System::unveil("/res", "r"));
-    TRY(Core::System::unveil(nullptr, nullptr));
 
     auto app_icon = GUI::Icon::default_icon("app-theme-editor"sv);
     IGNORE_USE_IN_ESCAPING_LAMBDA auto window = GUI::Window::construct();
@@ -75,7 +72,6 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     window->restore_size_and_position("ThemeEditor"sv, "Window"sv, { { 820, 520 } });
     window->save_size_and_position_on_close("ThemeEditor"sv, "Window"sv);
-    window->set_resizable(false);
     window->show();
     window->set_icon(app_icon.bitmap_for_size(16));
     return app->exec();

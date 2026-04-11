@@ -8,17 +8,22 @@ on:
 
 jobs:
   convert_using_pandoc:
-    runs-on: ubuntu-22.04
-    if: always() && github.repository == 'SerenityOS/serenity' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    if: github.repository == 'SerenityOS/serenity' && github.ref == 'refs/heads/master'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
       - uses: r-lib/actions/setup-pandoc@v2
         with:
           pandoc-version: '2.13'
+
       - name: Actually build website
         run: ./Meta/build-manpages-website.sh
+
       - name: Deploy to GitHub pages
-        uses: JamesIves/github-pages-deploy-action@v4.6.9
+        uses: JamesIves/github-pages-deploy-action@v4.8.0
         with:
           git-config-name: BuggieBot
           git-config-email: buggiebot@serenityos.org

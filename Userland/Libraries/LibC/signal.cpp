@@ -143,7 +143,7 @@ int sigpending(sigset_t* set)
 }
 
 // Signal 0 (the null signal) and Signal 32 (SIGCANCEL) are deliberately set to null here.
-// They are not intended to be resolved by strsignal(), getsignalname() or getsignalbyname().
+// They are not intended to be resolved by strsignal(), sig2str() or str2sig().
 #define ENUMERATE_SIGNALS                                  \
     __ENUMERATE_SIGNAL(nullptr, nullptr)                   \
     __ENUMERATE_SIGNAL("HUP", "Hangup")                    \
@@ -238,33 +238,80 @@ int sigtimedwait(sigset_t const* set, siginfo_t* info, struct timespec const* ti
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
-int getsignalbyname(char const* name)
+// https://pubs.opengroup.org/onlinepubs/9799919799/functions/sig2str.html
+int sig2str(int signum, char* str)
 {
-    VERIFY(name);
-    StringView name_sv { name, strlen(name) };
-    for (size_t i = 1; i < NSIG; ++i) {
-        if (!sys_signame[i])
-            continue;
+    VERIFY(str);
 
-        StringView signal_name { sys_signame[i], strlen(sys_signame[i]) };
-        if (signal_name == name_sv || (name_sv.starts_with("SIG"sv) && signal_name == name_sv.substring_view(3)))
-            return i;
+    // If signum is equal to 0, the behavior is unspecified.
+    if (signum <= 0)
+        return -1;
+
+    // If signum is a valid, supported signal number (...), the sig2str()
+    // function shall return 0; otherwise, if signum is not equal to 0, it shall
+    // return -1.
+    if (signum < 0 || signum >= NSIG)
+        return -1;
+
+    // If signum is equal to one of the symbolic constants listed in the table
+    // of signal numbers in <signal.h>, the stored signal name shall be the
+    // name of the symbolic constant without the SIG prefix.
+    if (sys_signame[signum]) {
+        size_t signal_string_length = strlen(sys_signame[signum]);
+        // SIG2STR_MAX includes the null terminator while strlen does not,
+        // so the length must be at most SIG2STR_MAX - 1.
+        VERIFY(signal_string_length < SIG2STR_MAX);
+        memcpy(str, sys_signame[signum], signal_string_length);
+        str[signal_string_length] = 0;
+        return 0;
     }
-    errno = EINVAL;
+
+    // FIXME: Handle realtime signals.
+
     return -1;
 }
 
-char const* getsignalname(int signal)
+// https://pubs.opengroup.org/onlinepubs/9799919799/functions/str2sig.html
+int str2sig(char const* __restrict__ str, int* __restrict__ pnum)
 {
-    if (signal <= 0 || signal >= NSIG) {
-        errno = EINVAL;
-        return nullptr;
+    VERIFY(str);
+    VERIFY(pnum);
+
+    // If str points to a string containing the name of one of the symbolic
+    // constants listed in the table of signal numbers in <signal.h>, without
+    // the SIG prefix, the stored signal number shall be equal to the value of
+    // the symbolic constant.
+    for (int i = 1; i < NSIG; ++i) {
+        if (!sys_signame[i])
+            continue;
+        if (strcmp(str, sys_signame[i]) == 0) {
+            *pnum = i;
+            return 0;
+        }
     }
 
-    auto const* result = sys_signame[signal];
-    if (!result)
-        errno = EINVAL;
+    // FIXME: Handle realtime signals.
 
-    return result;
+    // If str points to a string containing a decimal representation of a valid,
+    // supported signal number, the value stored in the location pointed to by
+    // pnum shall be equal to that number.
+    int parsed_number = 0;
+    for (size_t i = 0; str[i]; ++i) {
+        if (str[i] < '0' || str[i] > '9')
+            return -1;
+        parsed_number = (parsed_number * 10) + (str[i] - '0');
+    }
+
+    // If str points to a string containing a decimal representation of the
+    // value 0 and the string was not returned by a previous successful call
+    // to sig2str() with a signum argument of 0, the behavior is unspecified.
+    if (parsed_number <= 0)
+        return -1;
+
+    if (parsed_number >= NSIG || !sys_signame[parsed_number])
+        return -1;
+
+    *pnum = parsed_number;
+    return 0;
 }
 }

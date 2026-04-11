@@ -3,8 +3,12 @@
 # SPDX-License-Identifier: BSD-2-Clause
 
 import gdb
+import gdb.printing
 import gdb.types
 import re
+
+
+void_ptr = gdb.lookup_type('void').pointer()
 
 
 def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
@@ -20,10 +24,14 @@ def handler_class_for_type(type, re=re.compile('^([^<]+)(<.*>)?$')):
         return AKArray
     elif klass == 'AK::Atomic':
         return AKAtomic
+    elif klass == 'AK::Detail::IntrusiveList':
+        return AKIntrusiveList
     elif klass == 'AK::DistinctNumeric':
         return AKDistinctNumeric
     elif klass == 'AK::FixedArray':
         return AKFixedArrayPrinter
+    elif klass == 'AK::FixedStringBuffer':
+        return AKFixedStringBuffer
     elif klass == 'AK::HashMap':
         return AKHashMapPrettyPrinter
     elif klass == 'AK::RefCounted':
@@ -75,6 +83,32 @@ class AKAtomic:
         return f'AK::Atomic<{handler_class_for_type(contained_type).prettyprint_type(contained_type)}>'
 
 
+class AKIntrusiveList:
+    def __init__(self, val: gdb.Value):
+        self.val = val
+        self.element_type = self.val.type.template_argument(0)
+        self.node_member_offset = int(self.val.type.template_argument(2).cast(void_ptr))
+
+    def _node_to_value(self, node_ptr: gdb.Value) -> gdb.Value:
+        return (node_ptr.cast(void_ptr) - self.node_member_offset).cast(self.element_type.pointer()).dereference()
+
+    def to_string(self):
+        return AKIntrusiveList.prettyprint_type(self.val.type)
+
+    def children(self):
+        current = self.val["m_storage"]["m_first"]
+        i = 0
+        while current != 0:
+            yield f"[{i}]", self._node_to_value(current)
+            current = current["m_next"]
+            i += 1
+
+    @classmethod
+    def prettyprint_type(cls, type):
+        element_type = type.template_argument(0)
+        return f'AK::IntrusiveList<{handler_class_for_type(element_type).prettyprint_type(element_type)}>'
+
+
 class AKDistinctNumeric:
     def __init__(self, val):
         self.val = val
@@ -99,28 +133,13 @@ class AKFixedArrayPrinter:
     def __init__(self, val):
         self.val = val
 
-    def get_storage(self):
-        storage = self.val["m_storage"]
-
-        return None if int(storage) == 0 else storage
-
     def to_string(self):
-        storage = self.get_storage()
-        if storage is not None:
-            size = storage["size"]
-        else:
-            size = 0
-
+        size = self.val["m_size"]
         return f'{AKFixedArrayPrinter.prettyprint_type(self.val.type)} of size {size}'
 
     def children(self):
-        storage = self.get_storage()
-
-        if storage is None:
-            return []
-        else:
-            size = storage["size"]
-            elements = storage["elements"]
+        size = self.val["m_size"]
+        elements = self.val["m_elements"]
 
         # Very arbitrary limit, just to catch UAF'd and garbage vector values with a silly number of elements
         if size > 373373:
@@ -132,6 +151,22 @@ class AKFixedArrayPrinter:
     def prettyprint_type(cls, type):
         template_type = type.template_argument(0)
         return f'AK::FixedArray<{handler_class_for_type(template_type).prettyprint_type(template_type)}>'
+
+
+class AKFixedStringBuffer:
+    def __init__(self, val):
+        self.val = val
+
+    def to_string(self):
+        if int(self.val["m_stored_length"]) == 0:
+            return '""'
+        else:
+            return '"' + self.val["m_storage"]["__data"].string(length=self.val["m_stored_length"]) + '"'
+
+    @classmethod
+    def prettyprint_type(cls, type):
+        size = type.template_argument(0)
+        return f'AK::FixedStringBuffer<{size}>'
 
 
 class AKRefCounted:
@@ -189,7 +224,7 @@ class AKStringView:
         if int(self.val["m_length"]) == 0:
             return '""'
         else:
-            return self.val["m_characters"].string(length=self.val["m_length"])
+            return '"' + self.val["m_characters"].string(length=self.val["m_length"]) + '"'
 
     @classmethod
     def prettyprint_type(cls, type):

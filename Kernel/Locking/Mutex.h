@@ -14,7 +14,8 @@
 #include <Kernel/Forward.h>
 #include <Kernel/Locking/LockLocation.h>
 #include <Kernel/Locking/LockMode.h>
-#include <Kernel/Tasks/WaitQueue.h>
+#include <Kernel/Locking/SpinlockProtected.h>
+#include <Kernel/Tasks/Thread.h>
 
 namespace Kernel {
 
@@ -117,7 +118,7 @@ private:
         }
     };
     // FIXME: Use a specific lock rank passed by constructor.
-    SpinlockProtected<BlockedThreadLists, LockRank::None> m_blocked_thread_lists {};
+    RecursiveSpinlockProtected<BlockedThreadLists, LockRank::None> m_blocked_thread_lists {};
 
     // FIXME: See above.
     mutable Spinlock<LockRank::None> m_lock {};

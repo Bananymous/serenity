@@ -146,19 +146,14 @@
     [_pdfView toggleShowClippingPaths:sender];
 }
 
-- (IBAction)toggleClipImages:(id)sender
+- (IBAction)toggleApplyClip:(id)sender
 {
-    [_pdfView toggleClipImages:sender];
+    [_pdfView toggleApplyClip:sender];
 }
 
-- (IBAction)toggleClipPaths:(id)sender
+- (IBAction)toggleUseConstantAlpha:(id)sender
 {
-    [_pdfView toggleClipPaths:sender];
-}
-
-- (IBAction)toggleClipText:(id)sender
-{
-    [_pdfView toggleClipText:sender];
+    [_pdfView toggleUseConstantAlpha:sender];
 }
 
 - (IBAction)toggleShowImages:(id)sender
@@ -199,7 +194,7 @@
 - (void)pageChanged
 {
     [self.window setSubtitle:
-                     [NSString stringWithFormat:@"Page %d of %d", [_pdfView page], _pdfDocument.pdf->get_page_count()]];
+            [NSString stringWithFormat:@"Page %d of %d", [_pdfView page], _pdfDocument.pdf->get_page_count()]];
 }
 
 #pragma mark - NSToolbarDelegate

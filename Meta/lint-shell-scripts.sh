@@ -6,14 +6,17 @@ script_path=$(cd -P -- "$(dirname -- "$0")" && pwd -P)
 cd "$script_path/.."
 
 if [ "$#" -eq "0" ]; then
-    mapfile -t files < <(
+    files=()
+    while IFS= read -r file; do
+        files+=("$file")
+    done <  <(
         git ls-files -- \
             '*.sh' \
             ':!:Ports' \
             ':!:Tests/LibShell' \
             ':!:Base/home/anon/Tests' \
             ':!:Base/root/generate_manpages.sh' \
-            ':!:Base/usr/share/shell' \
+            ':!:Base/usr/share/Shell' \
             ':!:Base/etc/shellrc' \
     )
 else
@@ -36,7 +39,7 @@ if (( ${#files[@]} )); then
         exit 1
     fi
 
-    shellcheck --source-path=SCRIPTDIR "${files[@]}"
+    shellcheck --source-path=SCRIPTDIR --external-sources "${files[@]}"
 
     for file in "${files[@]}"; do
         if (< "$file" grep -qE "grep [^|);]*-[^- ]*P"); then

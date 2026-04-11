@@ -46,13 +46,15 @@ else
     : "${SUDO_UID:=0}" "${SUDO_GID:=0}"
 fi
 
+DISK_IMAGE_NAME=raspberry_pi_disk_image
+
 printf "setting up disk image... "
-dd if=/dev/zero of=raspberry_pi_disk_image bs=1M count="${DISK_SIZE}" status=none || die "couldn't create disk image"
-chown "$SUDO_UID":"$SUDO_GID" raspberry_pi_disk_image || die "couldn't adjust permissions on disk image"
+dd if=/dev/zero of=$DISK_IMAGE_NAME bs=1M count="${DISK_SIZE}" status=none || die "couldn't create disk image"
+chown "$SUDO_UID":"$SUDO_GID" $DISK_IMAGE_NAME || die "couldn't adjust permissions on disk image"
 echo "done"
 
 printf "creating loopback device... "
-dev=$(losetup --find --partscan --show raspberry_pi_disk_image)
+dev=$(losetup --find --partscan --show $DISK_IMAGE_NAME)
 if [ -z "$dev" ]; then
     die "couldn't mount loopback device"
 fi
@@ -101,6 +103,19 @@ echo "done"
 
 cp -r raspberry-pi-firmware/boot/* boot/
 
+cp "$SERENITY_SOURCE_DIR/Toolchain/Build/edk2/Build/RPi4/RELEASE_GCC5/FV/RPI_EFI.fd" boot/ && {
+    # Based on https://github.com/tianocore/edk2-platforms/tree/master/Platform/RaspberryPi/RPi4#booting-the-firmware.
+    PI4_EDK2_BOOT_OPTIONS="
+armstub=RPI_EFI.fd
+disable_commandline_tags=2
+device_tree_address=0x3e0000
+device_tree_end=0x400000
+kernel=
+"
+    mkdir -p boot/EFI/BOOT
+    cp mnt/boot/Kernel.efi boot/EFI/BOOT/BOOTAA64.EFI
+} || echo -e "\e[33mRPI_EFI.fd for Pi 4 not found. The generated image won't work on Pi 4. Run 'Toolchain/BuildEDK2.sh rpi4' if you want to build it.\e[0m"
+
 cat <<EOF >boot/config.txt
 # We only support AArch64.
 arm_64bit=1
@@ -115,9 +130,14 @@ kernel=Kernel.bin
 [pi4]
 # We use UART0 as the console.
 dtoverlay=disable-bt
-EOF
+${PI4_EDK2_BOOT_OPTIONS}
 
-echo "serial_debug root=block100:1" >boot/cmdline.txt
+[pi5]
+# We only support 32-bit framebuffers.
+framebuffer_depth=32
+EOF
 
 # FIXME: Mount the boot partition on /boot (both here and in serenity), so we don't need to move the kernel image to the boot filesystem.
 mv mnt/boot/Kernel.bin boot/
+
+echo "serial_debug root=block100:1" >boot/cmdline.txt

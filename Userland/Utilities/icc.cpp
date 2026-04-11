@@ -1,9 +1,12 @@
 /*
- * Copyright (c) 2022-2023, Nico Weber <thakis@chromium.org>
+ * Copyright (c) 2022-2025, Nico Weber <thakis@chromium.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Enumerate.h>
+#include <AK/Format.h>
+#include <AK/GenericLexer.h>
 #include <AK/Random.h>
 #include <AK/String.h>
 #include <AK/StringView.h>
@@ -227,6 +230,103 @@ static ErrorOr<void> print_profile_measurement(Gfx::ICC::Profile const& profile)
     return {};
 }
 
+template<Arithmetic T>
+static ErrorOr<Vector<T, 4>> split_color_string(StringView color, Gfx::ICC::ColorSpace color_space)
+{
+    auto split = color.split_view(',');
+
+    if (number_of_components_in_color_space(color_space) != split.size())
+        return Error::from_string_literal("unexpected number of colors in color string");
+
+    Vector<T, 4> channels;
+    for (auto channel : split) {
+        auto maybe_number = channel.to_number<T>();
+        if (!maybe_number.has_value())
+            return Error::from_string_literal("unable to parse color string");
+        channels.append(*maybe_number);
+    }
+    return channels;
+}
+
+static ErrorOr<void> print_color_as_sRGB(StringView color, Gfx::ICC::Profile const& profile)
+{
+    auto channels = TRY(split_color_string<u8>(color, profile.data_color_space()));
+    auto srgb_profile = TRY(Gfx::ICC::sRGB());
+    auto pcs = TRY(profile.to_pcs(channels));
+    Array<u8, 3> out_color_buffer {};
+    TRY(srgb_profile->from_pcs(profile, pcs, out_color_buffer));
+    auto out_color = Color { out_color_buffer[0], out_color_buffer[1], out_color_buffer[2] };
+    outln("{} in sRGB is {}", channels, out_color);
+
+    return {};
+}
+
+static ErrorOr<void> print_stdin_u8_to_pcs(Gfx::ICC::Profile const& profile)
+{
+    auto stdin = TRY(Core::InputBufferedFile::create(TRY(Core::File::standard_input())));
+    ByteBuffer buffer = TRY(ByteBuffer::create_uninitialized(1024));
+    while (!stdin->is_eof()) {
+        auto line = TRY(stdin->read_line(buffer));
+        if (line.is_empty())
+            continue;
+        auto channels = TRY(split_color_string<u8>(line, profile.data_color_space()));
+        auto pcs = TRY(profile.to_pcs(channels));
+        if (profile.connection_space() == Gfx::ICC::ColorSpace::PCSLAB) {
+            outln("pcslab({}, {}, {})", pcs[0], pcs[1], pcs[2]);
+        } else if (profile.connection_space() == Gfx::ICC::ColorSpace::PCSXYZ) {
+            outln("pcsxyz({}, {}, {})", pcs[0], pcs[1], pcs[2]);
+        } else {
+            VERIFY_NOT_REACHED();
+        }
+    }
+    return {};
+}
+
+static ErrorOr<void> print_stdin_u8_from_pcs(Gfx::ICC::Profile const& profile)
+{
+    auto stdin = TRY(Core::InputBufferedFile::create(TRY(Core::File::standard_input())));
+    ByteBuffer buffer = TRY(ByteBuffer::create_uninitialized(1024));
+    while (!stdin->is_eof()) {
+        auto line = TRY(stdin->read_line(buffer));
+        if (line.is_empty())
+            continue;
+
+        GenericLexer lexer(line);
+        Gfx::ICC::ColorSpace pcs_space = Gfx::ICC::ColorSpace::FifteenColor;
+        if (lexer.consume_specific("pcslab"))
+            pcs_space = Gfx::ICC::ColorSpace::PCSLAB;
+        else if (lexer.consume_specific("pcsxyz"))
+            pcs_space = Gfx::ICC::ColorSpace::PCSXYZ;
+        else
+            return Error::from_string_literal("expected 'pcslab' or 'pcsxyz'");
+        lexer.consume_while([](char c) { return is_ascii_space(c); });
+        if (!lexer.consume_specific('('))
+            return Error::from_string_literal("expected '(' after color space");
+        StringView remaining = lexer.remaining();
+        if (!remaining.ends_with(')'))
+            return Error::from_string_literal("expected ')' at end of color");
+        remaining = remaining.substring_view(0, remaining.length() - 1);
+        auto pcs_vector = TRY(split_color_string<float>(remaining, pcs_space));
+        FloatVector3 pcs { pcs_vector[0], pcs_vector[1], pcs_vector[2] };
+
+        Vector<u8, 4> out_colors;
+        out_colors.resize(number_of_components_in_color_space(profile.data_color_space()));
+
+        // It's fishy to pass profile.pcs_illuminant() here; we really have to pass the illuminant of the input PCS color,
+        // but we don't have that information. But at least the v4 spec dictates that the PCS illuminant always is
+        // D50 (X = 0,9642, Y = 1,0 and Z = 0,8249), and ICC::Profile's parse_pcs_illuminant() rejects any non-D50
+        // (except for v2 with D65, which it emits a warning for and then treats as D50), so for every profile we can
+        // load, pcs_illuminant() is D50 here and this will do the right thing.
+        TRY(profile.from_pcs(pcs_space, profile.pcs_illuminant(), pcs, out_colors));
+
+        out("{}", out_colors[0]);
+        for (size_t i = 1; i < out_colors.size(); ++i)
+            out(", {}", out_colors[i]);
+        outln();
+    }
+    return {};
+}
+
 ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     Core::ArgsParser args_parser;
@@ -235,7 +335,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_positional_argument(path, "Path to ICC profile or to image containing ICC profile", "FILE", Core::ArgsParser::Required::No);
 
     StringView name;
-    args_parser.add_option(name, "Name of a built-in profile, such as 'sRGB'", "name", 'n', "NAME");
+    args_parser.add_option(name, "Name of a built-in profile, such as 'sRGB', 'LAB', 'XYZ'", "name", 'n', "NAME");
 
     StringView dump_out_path;
     args_parser.add_option(dump_out_path, "Dump unmodified ICC profile bytes to this path", "dump-to", 0, "FILE");
@@ -248,6 +348,15 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     bool measure = false;
     args_parser.add_option(measure, "For RGB ICC profiles, print perceptually smallest and largest color step", "measure");
+
+    StringView color_to_convert;
+    args_parser.add_option(color_to_convert, "Convert a color from the given profile to sRGB", "color-to-sRGB", 0, "c1, c2, c3[, c4]");
+
+    bool stdin_u8_to_pcs = false;
+    args_parser.add_option(stdin_u8_to_pcs, "Read colors from stdin and print PCS to stdout", "stdin-u8-to-pcs");
+
+    bool stdin_u8_from_pcs = false;
+    args_parser.add_option(stdin_u8_from_pcs, "Read PCS colors from stdin and print profile colors to stdout", "stdin-u8-from-pcs");
 
     bool force_print = false;
     args_parser.add_option(force_print, "Print profile even when writing ICC files", "print");
@@ -270,8 +379,24 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     ReadonlyBytes icc_bytes;
     NonnullRefPtr<Gfx::ICC::Profile> profile = TRY([&]() -> ErrorOr<NonnullRefPtr<Gfx::ICC::Profile>> {
         if (!name.is_empty()) {
+            if (name == "LAB")
+                return Gfx::ICC::IdentityLAB();
+            if (name == "LAB_mft2")
+                return Gfx::ICC::IdentityLAB_mft2();
+            if (name == "LAB_mABmBA_no_clut")
+                return Gfx::ICC::IdentityLAB_mABmBA_no_clut();
+            if (name == "LAB_mABmBA_u8_clut")
+                return Gfx::ICC::IdentityLAB_mABmBA_u8_clut();
+            if (name == "LAB_mABmBA_u16_clut")
+                return Gfx::ICC::IdentityLAB_mABmBA_u16_clut();
+            if (name == "XYZ_mABmBA_no_clut")
+                return Gfx::ICC::IdentityXYZ_D50_mABmBA_no_clut();
+            if (name == "XYZ_mABmBA_u16_clut")
+                return Gfx::ICC::IdentityXYZ_D50_mABmBA_u16_clut();
             if (name == "sRGB")
                 return Gfx::ICC::sRGB();
+            if (name == "XYZ")
+                return Gfx::ICC::IdentityXYZ_D50();
             return Error::from_string_literal("unknown profile name");
         }
         auto file = TRY(Core::MappedFile::map(path));
@@ -312,6 +437,21 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             return 1;
         }
         TRY(print_profile_measurement(*profile));
+    }
+
+    if (!color_to_convert.is_empty()) {
+        TRY(print_color_as_sRGB(color_to_convert, *profile));
+        return 0;
+    }
+
+    if (stdin_u8_to_pcs) {
+        TRY(print_stdin_u8_to_pcs(*profile));
+        return 0;
+    }
+
+    if (stdin_u8_from_pcs) {
+        TRY(print_stdin_u8_from_pcs(*profile));
+        return 0;
     }
 
     bool do_print = (dump_out_path.is_empty() && reencode_out_path.is_empty() && !measure) || force_print;

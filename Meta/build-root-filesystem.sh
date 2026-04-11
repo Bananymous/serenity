@@ -38,13 +38,13 @@ SERENITY_ARCH="${SERENITY_ARCH:-x86_64}"
 
 if [ "$SERENITY_TOOLCHAIN" = "Clang" ]; then
     TOOLCHAIN_DIR="$SERENITY_SOURCE_DIR"/Toolchain/Local/clang/
-    rsync -aH --update -t "$TOOLCHAIN_DIR"/lib/"$SERENITY_ARCH"-pc-serenity/* mnt/usr/lib
-    mkdir -p mnt/usr/include/"$SERENITY_ARCH"-pc-serenity
+    rsync -aH --update -t "$TOOLCHAIN_DIR"/lib/"$SERENITY_ARCH"-unknown-serenity/* mnt/usr/lib
+    mkdir -p mnt/usr/include/"$SERENITY_ARCH"-serenity
     rsync -aH --update -t -r "$TOOLCHAIN_DIR"/include/c++ mnt/usr/include
-    rsync -aH --update -t -r "$TOOLCHAIN_DIR"/include/"$SERENITY_ARCH"-pc-serenity/c++ mnt/usr/include/"$SERENITY_ARCH"-pc-serenity
+    rsync -aH --update -t -r "$TOOLCHAIN_DIR"/include/"$SERENITY_ARCH"-unknown-serenity/c++ mnt/usr/include/"$SERENITY_ARCH"-serenity
 else
-    rsync -aH --update -t -r "$SERENITY_SOURCE_DIR"/Toolchain/Local/"$SERENITY_ARCH"/"$SERENITY_ARCH"-pc-serenity/lib/* mnt/usr/lib
-    rsync -aH --update -t -r "$SERENITY_SOURCE_DIR"/Toolchain/Local/"$SERENITY_ARCH"/"$SERENITY_ARCH"-pc-serenity/include/c++ mnt/usr/include
+    rsync -aH --update -t -r "$SERENITY_SOURCE_DIR"/Toolchain/Local/"$SERENITY_ARCH"/"$SERENITY_ARCH"-serenity/lib/* mnt/usr/lib
+    rsync -aH --update -t -r "$SERENITY_SOURCE_DIR"/Toolchain/Local/"$SERENITY_ARCH"/"$SERENITY_ARCH"-serenity/include/c++ mnt/usr/include
 fi
 
 # If umask was 027 or similar when the repo was cloned,
@@ -52,7 +52,7 @@ fi
 # the permissions needed in the image.
 chmod -R g+rX,o+rX "$SERENITY_SOURCE_DIR"/Base/* mnt/
 
-chmod 660 mnt/etc/WindowServer.ini
+chmod 664 mnt/etc/WindowServer.ini
 chown $window_uid:$window_gid mnt/etc/WindowServer.ini
 echo "/bin/sh" > mnt/etc/shells
 
@@ -135,11 +135,11 @@ if [ -f mnt/bin/network-settings ]; then
 fi
 
 chmod 600 mnt/etc/shadow
-chmod 755 mnt/res/devel/templates/*.postcreate
+chmod 755 mnt/usr/share/HackStudio/templates/*.postcreate
 echo "done"
 
 printf "creating initial filesystem structure... "
-for dir in bin etc proc mnt tmp boot www var/run usr/local usr/Ports usr/bin; do
+for dir in bin etc proc mnt tmp boot var/run usr/local usr/Ports usr/bin; do
     mkdir -p mnt/$dir
 done
 chmod 700 mnt/boot

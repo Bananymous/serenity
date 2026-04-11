@@ -17,10 +17,10 @@ static library into a shared library.
  1 file changed, 23 insertions(+)
 
 diff --git a/configure b/configure
-index c32e4e3d6aa79c0f4f636494463794b118b45fe3..cf9b980d8008019d77c768395e1191aa8e985927 100755
+index 4f89118495be24a8a5e228ad6ff00a6da9d58f9d..8849cd1ad50ec1015b0bcbd7bdce9d18e74e111f 100755
 --- a/configure
 +++ b/configure
-@@ -9644,6 +9644,10 @@ tpf*)
+@@ -10032,6 +10032,10 @@ tpf*)
  os2*)
    lt_cv_deplibs_check_method=pass_all
    ;;
@@ -29,9 +29,9 @@ index c32e4e3d6aa79c0f4f636494463794b118b45fe3..cf9b980d8008019d77c768395e1191aa
 +  lt_cv_deplibs_check_method=pass_all
 +  ;;
  esac
- 
- fi
-@@ -13121,6 +13125,10 @@ lt_prog_compiler_static=
+  ;;
+ esac
+@@ -13663,6 +13667,10 @@ lt_prog_compiler_static=
        lt_prog_compiler_static='-Bstatic'
        ;;
  
@@ -42,7 +42,7 @@ index c32e4e3d6aa79c0f4f636494463794b118b45fe3..cf9b980d8008019d77c768395e1191aa
      *)
        lt_prog_compiler_can_build_shared=no
        ;;
-@@ -14653,6 +14661,10 @@ printf "%s\n" "$lt_cv_irix_exported_symbol" >&6; }
+@@ -15216,6 +15224,10 @@ printf "%s\n" "$lt_cv_irix_exported_symbol" >&6; }
        hardcode_shlibpath_var=no
        ;;
  
@@ -53,7 +53,7 @@ index c32e4e3d6aa79c0f4f636494463794b118b45fe3..cf9b980d8008019d77c768395e1191aa
      *)
        ld_shlibs=no
        ;;
-@@ -15725,6 +15737,17 @@ uts4*)
+@@ -16362,6 +16374,17 @@ uts4*)
    shlibpath_var=LD_LIBRARY_PATH
    ;;
  
@@ -68,6 +68,6 @@ index c32e4e3d6aa79c0f4f636494463794b118b45fe3..cf9b980d8008019d77c768395e1191aa
 +  dynamic_linker='SerenityOS LibELF'
 +  ;;
 +
- *)
-   dynamic_linker=no
-   ;;
+ emscripten*)
+   version_type=none
+   need_lib_prefix=no

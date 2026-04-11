@@ -9,11 +9,11 @@
 #include <AK/QuickSort.h>
 #include <AK/StringView.h>
 #include <Kernel/Arch/CPU.h>
+#include <Kernel/Arch/MemoryFences.h>
 #include <Kernel/Arch/PageDirectory.h>
 #include <Kernel/Arch/PageFault.h>
 #include <Kernel/Arch/RegisterState.h>
 #include <Kernel/Boot/BootInfo.h>
-#include <Kernel/Boot/Multiboot.h>
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/Firmware/DeviceTree/DeviceTree.h>
 #include <Kernel/Heap/kmalloc.h>
@@ -207,30 +207,28 @@ IterationDecision MemoryManager::for_each_physical_memory_range(Function<Iterati
     });
 }
 
-UNMAP_AFTER_INIT void MemoryManager::register_reserved_ranges()
+UNMAP_AFTER_INIT void MemoryManager::register_reserved_ranges(GlobalData& global_data)
 {
-    m_global_data.with([&](auto& global_data) {
-        VERIFY(!global_data.physical_memory_ranges.is_empty());
-        ContiguousReservedMemoryRange range;
-        for (auto& current_range : global_data.physical_memory_ranges) {
-            if (current_range.type != PhysicalMemoryRangeType::Reserved) {
-                if (range.start.is_null())
-                    continue;
-                global_data.reserved_memory_ranges.append(ContiguousReservedMemoryRange { range.start, current_range.start.get() - range.start.get() });
-                range.start.set((FlatPtr) nullptr);
+    VERIFY(!global_data.physical_memory_ranges.is_empty());
+    ContiguousReservedMemoryRange range;
+    for (auto& current_range : global_data.physical_memory_ranges) {
+        if (current_range.type != PhysicalMemoryRangeType::Reserved) {
+            if (range.start.is_null())
                 continue;
-            }
-            if (!range.start.is_null()) {
-                continue;
-            }
-            range.start = current_range.start;
+            global_data.reserved_memory_ranges.try_append(ContiguousReservedMemoryRange { range.start, current_range.start.get() - range.start.get() }).release_value_but_fixme_should_propagate_errors();
+            range.start.set((FlatPtr) nullptr);
+            continue;
         }
-        if (global_data.physical_memory_ranges.last().type != PhysicalMemoryRangeType::Reserved)
-            return;
-        if (range.start.is_null())
-            return;
-        global_data.reserved_memory_ranges.append(ContiguousReservedMemoryRange { range.start, global_data.physical_memory_ranges.last().start.get() + global_data.physical_memory_ranges.last().length - range.start.get() });
-    });
+        if (!range.start.is_null()) {
+            continue;
+        }
+        range.start = current_range.start;
+    }
+    if (global_data.physical_memory_ranges.last().type != PhysicalMemoryRangeType::Reserved)
+        return;
+    if (range.start.is_null())
+        return;
+    global_data.reserved_memory_ranges.try_append(ContiguousReservedMemoryRange { range.start, global_data.physical_memory_ranges.last().start.get() + global_data.physical_memory_ranges.last().length - range.start.get() }).release_value_but_fixme_should_propagate_errors();
 }
 
 bool MemoryManager::is_allowed_to_read_physical_memory_for_userspace(PhysicalAddress start_address, size_t read_length) const
@@ -257,7 +255,7 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map()
 {
     // Register used memory regions that we know of.
     m_global_data.with([this](auto& global_data) {
-        global_data.used_memory_ranges.ensure_capacity(4);
+        global_data.used_memory_ranges.try_ensure_capacity(4).release_value_but_fixme_should_propagate_errors();
 #if ARCH(X86_64)
         // NOTE: We don't touch the first 1 MiB of RAM on x86-64 even if it's usable as indicated
         // by a certain memory map. There are 2 reasons for this:
@@ -281,9 +279,9 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map()
         // **To be completely on the safe side** and never worry about where the EBDA is located, how BIOS might
         // corrupt the low memory range during power state changing, other bad behavior of some BIOS might change
         // a value in the very first 64k bytes of RAM, etc - we should just ignore this range completely.
-        global_data.used_memory_ranges.append(UsedMemoryRange { UsedMemoryRangeType::LowMemory, PhysicalAddress(0x00000000), PhysicalAddress(1 * MiB) });
+        global_data.used_memory_ranges.try_append(UsedMemoryRange { UsedMemoryRangeType::LowMemory, PhysicalAddress(0x00000000), PhysicalAddress(1 * MiB) }).release_value_but_fixme_should_propagate_errors();
 #endif
-        global_data.used_memory_ranges.append(UsedMemoryRange { UsedMemoryRangeType::Kernel, PhysicalAddress(virtual_to_low_physical((FlatPtr)start_of_kernel_image)), PhysicalAddress(page_round_up(virtual_to_low_physical((FlatPtr)end_of_kernel_image)).release_value_but_fixme_should_propagate_errors()) });
+        global_data.used_memory_ranges.try_append(UsedMemoryRange { UsedMemoryRangeType::Kernel, PhysicalAddress(virtual_to_low_physical((FlatPtr)start_of_kernel_image)), PhysicalAddress(page_round_up(virtual_to_low_physical((FlatPtr)end_of_kernel_image)).release_value_but_fixme_should_propagate_errors()) }).release_value_but_fixme_should_propagate_errors();
 
         if (g_boot_info.boot_method == BootMethod::EFI)
             parse_memory_map_efi(global_data);
@@ -295,11 +293,11 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map()
             VERIFY_NOT_REACHED();
 
         // Now we need to setup the physical regions we will use later
-        struct ContiguousPhysicalVirtualRange {
+        struct ContiguousPhysicalRange {
             PhysicalAddress lower;
             PhysicalAddress upper;
         };
-        Optional<ContiguousPhysicalVirtualRange> last_contiguous_physical_range;
+        Optional<ContiguousPhysicalRange> last_contiguous_physical_range;
         for (auto range : global_data.physical_memory_ranges) {
             if (range.type != PhysicalMemoryRangeType::Usable)
                 continue;
@@ -344,9 +342,9 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map()
                     if (last_contiguous_physical_range.has_value()) {
                         auto range = last_contiguous_physical_range.release_value();
                         // FIXME: OOM?
-                        global_data.physical_regions.append(PhysicalRegion::try_create(range.lower, range.upper).release_nonnull());
+                        global_data.physical_regions.try_append(PhysicalRegion::try_create(range.lower, range.upper).release_nonnull()).release_value_but_fixme_should_propagate_errors();
                     }
-                    last_contiguous_physical_range = ContiguousPhysicalVirtualRange { .lower = addr, .upper = addr };
+                    last_contiguous_physical_range = ContiguousPhysicalRange { .lower = addr, .upper = addr };
                 } else {
                     last_contiguous_physical_range->upper = addr;
                 }
@@ -355,19 +353,19 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map()
             if (last_contiguous_physical_range.has_value()) {
                 auto range = last_contiguous_physical_range.release_value();
                 // FIXME: OOM?
-                global_data.physical_regions.append(PhysicalRegion::try_create(range.lower, range.upper).release_nonnull());
+                global_data.physical_regions.try_append(PhysicalRegion::try_create(range.lower, range.upper).release_nonnull()).release_value_but_fixme_should_propagate_errors();
             }
         }
 
         for (auto& region : global_data.physical_regions)
             global_data.system_memory_info.physical_pages += region->size();
 
-        register_reserved_ranges();
+        register_reserved_ranges(global_data);
         for (auto& range : global_data.reserved_memory_ranges) {
             dmesgln("MM: Contiguous reserved range from {}, length is {}", range.start, range.length);
         }
 
-        initialize_physical_pages();
+        initialize_physical_pages(global_data);
 
         VERIFY(global_data.system_memory_info.physical_pages > 0);
 
@@ -375,11 +373,11 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map()
         global_data.system_memory_info.physical_pages_uncommitted = global_data.system_memory_info.physical_pages;
 
         for (auto& used_range : global_data.used_memory_ranges) {
-            dmesgln("MM: {} range @ {} - {} (size {:#x})", UserMemoryRangeTypeNames[to_underlying(used_range.type)], used_range.start, used_range.end.offset(-1), used_range.end.as_ptr() - used_range.start.as_ptr());
+            dmesgln("MM: {} range @ {} - {} (size {:#x})", used_memory_range_type_names[to_underlying(used_range.type)], used_range.start, used_range.end.offset(-1), used_range.end.as_ptr() - used_range.start.as_ptr());
         }
 
         for (auto& region : global_data.physical_regions) {
-            dmesgln("MM: User physical region: {} - {} (size {:#x})", region->lower(), region->upper().offset(-1), PAGE_SIZE * region->size());
+            dmesgln("MM: Physical region: {} - {} (size {:#x})", region->lower(), region->upper().offset(-1), PAGE_SIZE * region->size());
             region->initialize_zones();
         }
     });
@@ -436,7 +434,7 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map_efi(MemoryManager::GlobalD
         case EFI::MemoryType::BootServicesCode:
         case EFI::MemoryType::BootServicesData:
         case EFI::MemoryType::Conventional:
-            global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::Usable, start_paddr, length });
+            global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::Usable, start_paddr, length }).release_value_but_fixme_should_propagate_errors();
             break;
         case EFI::MemoryType::Reserved:
         case EFI::MemoryType::LoaderCode:
@@ -467,29 +465,29 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map_efi(MemoryManager::GlobalD
             if ((start_paddr.get() != 0x000000fd00000000 || length != (0x000000ffffffffff - 0x000000fd00000000) + 1)
                 && (start_paddr.get() != 0x000003fff0000000 || length != 0x10000000))
 #endif
-                global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::Reserved, start_paddr, length });
+                global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::Reserved, start_paddr, length }).release_value_but_fixme_should_propagate_errors();
             break;
         case EFI::MemoryType::ACPIReclaim:
-            global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::ACPI_Reclaimable, start_paddr, length });
+            global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::ACPI_Reclaimable, start_paddr, length }).release_value_but_fixme_should_propagate_errors();
             break;
         case EFI::MemoryType::ACPI_NVS:
-            global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::ACPI_NVS, start_paddr, length });
+            global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::ACPI_NVS, start_paddr, length }).release_value_but_fixme_should_propagate_errors();
             break;
         case EFI::MemoryType::Unusable:
             dmesgln("MM: Warning, detected bad memory range!");
-            global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::BadMemory, start_paddr, length });
+            global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::BadMemory, start_paddr, length }).release_value_but_fixme_should_propagate_errors();
             break;
         default:
             dbgln("MM: Unknown EFI memory type: {}", to_underlying(descriptor->type));
-            global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::Unknown, start_paddr, length });
+            global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::Unknown, start_paddr, length }).release_value_but_fixme_should_propagate_errors();
             break;
         }
     }
 
     // SMBIOS data can be in a BootServicesData memory region (see https://uefi.org/specs/UEFI/2.10/02_Overview.html#x64-platforms, the same requirement is listed for AArch64 and RISC-V as well).
     // BootServices* memory regions are treated as normal main memory after ExitBootServices, so we need to explicitly mark its ranges as used.
-    global_data.used_memory_ranges.append(UsedMemoryRange { UsedMemoryRangeType::SMBIOS, g_boot_info.smbios.entry_point_paddr, g_boot_info.smbios.entry_point_paddr.offset(g_boot_info.smbios.entry_point_length) });
-    global_data.used_memory_ranges.append(UsedMemoryRange { UsedMemoryRangeType::SMBIOS, g_boot_info.smbios.structure_table_paddr, g_boot_info.smbios.structure_table_paddr.offset(g_boot_info.smbios.maximum_structure_table_length) });
+    global_data.used_memory_ranges.try_append(UsedMemoryRange { UsedMemoryRangeType::SMBIOS, g_boot_info.smbios.entry_point_paddr, g_boot_info.smbios.entry_point_paddr.offset(g_boot_info.smbios.entry_point_length) }).release_value_but_fixme_should_propagate_errors();
+    global_data.used_memory_ranges.try_append(UsedMemoryRange { UsedMemoryRangeType::SMBIOS, g_boot_info.smbios.structure_table_paddr, g_boot_info.smbios.structure_table_paddr.offset(g_boot_info.smbios.maximum_structure_table_length) }).release_value_but_fixme_should_propagate_errors();
 }
 
 UNMAP_AFTER_INIT void MemoryManager::parse_memory_map_fdt(MemoryManager::GlobalData& global_data, u8 const* fdt_addr)
@@ -504,9 +502,9 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map_fdt(MemoryManager::GlobalD
     u64 next_block_offset = fdt_header.off_mem_rsvmap + sizeof(::DeviceTree::FlattenedDeviceTreeReserveEntry);
     while ((next_block_offset < fdt_header.off_dt_struct) && (*mem_reserve_block != ::DeviceTree::FlattenedDeviceTreeReserveEntry {})) {
         dbgln("MM: Reserved Range /memreserve/: address: {} size {:#x}", PhysicalAddress { mem_reserve_block->address }, mem_reserve_block->size);
-        global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::Reserved, PhysicalAddress { mem_reserve_block->address }, mem_reserve_block->size });
+        global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::Reserved, PhysicalAddress { mem_reserve_block->address }, mem_reserve_block->size }).release_value_but_fixme_should_propagate_errors();
         // FIXME: Not all of these are "used", only those in "memory" are actually "used"
-        global_data.used_memory_ranges.append(UsedMemoryRange { UsedMemoryRangeType::BootModule, PhysicalAddress { mem_reserve_block->address }, PhysicalAddress { mem_reserve_block->address + mem_reserve_block->size } });
+        global_data.used_memory_ranges.try_append(UsedMemoryRange { UsedMemoryRangeType::BootModule, PhysicalAddress { mem_reserve_block->address }, PhysicalAddress { mem_reserve_block->address + mem_reserve_block->size } }).release_value_but_fixme_should_propagate_errors();
         ++mem_reserve_block;
         next_block_offset += sizeof(::DeviceTree::FlattenedDeviceTreeReserveEntry);
     }
@@ -575,7 +573,7 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map_fdt(MemoryManager::GlobalD
                     state.state = State::Root;
                     break;
                 case State::InMemory:
-                    global_data.physical_memory_ranges.grow_capacity(global_data.physical_memory_ranges.size() + state.reg.size());
+                    global_data.physical_memory_ranges.try_grow_capacity(global_data.physical_memory_ranges.size() + state.reg.size()).release_value_but_fixme_should_propagate_errors();
 
                     for (auto const& reg_entry : state.reg) {
                         dbgln("MM: Memory Range {}: address: {} size {:#x}", node_name, PhysicalAddress { reg_entry.start_addr }, reg_entry.size);
@@ -590,8 +588,8 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map_fdt(MemoryManager::GlobalD
                     if (state.reg.is_empty())
                         dbgln("MM: Skipping dynamically allocated reserved memory region {}", node_name);
 
-                    global_data.physical_memory_ranges.grow_capacity(global_data.physical_memory_ranges.size() + state.reg.size());
-                    global_data.used_memory_ranges.grow_capacity(global_data.used_memory_ranges.size() + state.reg.size());
+                    global_data.physical_memory_ranges.try_grow_capacity(global_data.physical_memory_ranges.size() + state.reg.size()).release_value_but_fixme_should_propagate_errors();
+                    global_data.used_memory_ranges.try_grow_capacity(global_data.used_memory_ranges.size() + state.reg.size()).release_value_but_fixme_should_propagate_errors();
 
                     for (auto const& reg_entry : state.reg) {
                         dbgln("MM: Reserved Range {}: address: {} size {:#x}", node_name, PhysicalAddress { reg_entry.start_addr }, reg_entry.size);
@@ -641,7 +639,7 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map_fdt(MemoryManager::GlobalD
                         VERIFY(state.address_cells);
                         VERIFY(state.size_cells);
 
-                        state.reg.ensure_capacity(data.size() / ((state.address_cells + state.size_cells) * sizeof(u32)));
+                        state.reg.try_ensure_capacity(data.size() / ((state.address_cells + state.size_cells) * sizeof(u32))).release_value_but_fixme_should_propagate_errors();
 
                         FixedMemoryStream reg_stream { data };
 
@@ -696,16 +694,11 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map_multiboot(MemoryManager::G
     if (g_boot_info.boot_method_specific.multiboot1.flags & 0x4 && !g_boot_info.boot_method_specific.multiboot1.module_physical_ptr.is_null()) {
         dmesgln("MM: Multiboot module @ {}, length={}", g_boot_info.boot_method_specific.multiboot1.module_physical_ptr, g_boot_info.boot_method_specific.multiboot1.module_length);
         VERIFY(g_boot_info.boot_method_specific.multiboot1.module_length != 0);
-        global_data.used_memory_ranges.append(UsedMemoryRange { UsedMemoryRangeType::BootModule, g_boot_info.boot_method_specific.multiboot1.module_physical_ptr, g_boot_info.boot_method_specific.multiboot1.module_physical_ptr.offset(g_boot_info.boot_method_specific.multiboot1.module_length) });
+        global_data.used_memory_ranges.try_append(UsedMemoryRange { UsedMemoryRangeType::BootModule, g_boot_info.boot_method_specific.multiboot1.module_physical_ptr, g_boot_info.boot_method_specific.multiboot1.module_physical_ptr.offset(g_boot_info.boot_method_specific.multiboot1.module_length) }).release_value_but_fixme_should_propagate_errors();
     }
 
     auto const* mmap_begin = g_boot_info.boot_method_specific.multiboot1.memory_map;
     auto const* mmap_end = g_boot_info.boot_method_specific.multiboot1.memory_map + g_boot_info.boot_method_specific.multiboot1.memory_map_count;
-
-    struct ContiguousPhysicalVirtualRange {
-        PhysicalAddress lower;
-        PhysicalAddress upper;
-    };
 
     for (auto const* mmap = mmap_begin; mmap < mmap_end; mmap++) {
         // We have to copy these onto the stack, because we take a reference to these when printing them out,
@@ -718,7 +711,7 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map_multiboot(MemoryManager::G
         auto start_address = PhysicalAddress(address);
         switch (mmap->type) {
         case (MULTIBOOT_MEMORY_AVAILABLE):
-            global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::Usable, start_address, length });
+            global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::Usable, start_address, length }).release_value_but_fixme_should_propagate_errors();
             break;
         case (MULTIBOOT_MEMORY_RESERVED):
 #if ARCH(X86_64)
@@ -740,207 +733,209 @@ UNMAP_AFTER_INIT void MemoryManager::parse_memory_map_multiboot(MemoryManager::G
             if ((address != 0x000000fd00000000 || length != (0x000000ffffffffff - 0x000000fd00000000) + 1)
                 && (address != 0x000003fff0000000 || length != 0x10000000))
 #endif
-                global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::Reserved, start_address, length });
+                global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::Reserved, start_address, length }).release_value_but_fixme_should_propagate_errors();
             break;
         case (MULTIBOOT_MEMORY_ACPI_RECLAIMABLE):
-            global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::ACPI_Reclaimable, start_address, length });
+            global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::ACPI_Reclaimable, start_address, length }).release_value_but_fixme_should_propagate_errors();
             break;
         case (MULTIBOOT_MEMORY_NVS):
-            global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::ACPI_NVS, start_address, length });
+            global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::ACPI_NVS, start_address, length }).release_value_but_fixme_should_propagate_errors();
             break;
         case (MULTIBOOT_MEMORY_BADRAM):
             dmesgln("MM: Warning, detected bad memory range!");
-            global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::BadMemory, start_address, length });
+            global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::BadMemory, start_address, length }).release_value_but_fixme_should_propagate_errors();
             break;
         default:
             dbgln("MM: Unknown range!");
-            global_data.physical_memory_ranges.append(PhysicalMemoryRange { PhysicalMemoryRangeType::Unknown, start_address, length });
+            global_data.physical_memory_ranges.try_append(PhysicalMemoryRange { PhysicalMemoryRangeType::Unknown, start_address, length }).release_value_but_fixme_should_propagate_errors();
             break;
         }
     }
 }
 
-UNMAP_AFTER_INIT void MemoryManager::initialize_physical_pages()
+UNMAP_AFTER_INIT void MemoryManager::initialize_physical_pages(GlobalData& global_data)
 {
-    m_global_data.with([&](auto& global_data) {
-        // We assume that the physical page range is contiguous and doesn't contain huge gaps!
-        PhysicalAddress highest_physical_address;
+    // We assume that the physical page range is contiguous and doesn't contain huge gaps!
+    PhysicalAddress highest_physical_address;
 #if ARCH(AARCH64)
-        // FIXME: The BCM2711/BCM2835 Raspberry Pi VideoCore region ends at 0x4000'0000.
-        //        Either make MMIO usable before MM is fully initialized and use the RPi mailbox to get this address
-        //        or make the physical page array dynamically resizable and possibly non-contiguos.
-        highest_physical_address = PhysicalAddress { 0x4000'0000 };
+    // FIXME: The BCM2711/BCM2835 Raspberry Pi VideoCore region ends at 0x4000'0000.
+    //        Either make MMIO usable before MM is fully initialized and use the RPi mailbox to get this address
+    //        or make the physical page array dynamically resizable and possibly non-contiguos.
+    highest_physical_address = PhysicalAddress { 0x4000'0000 };
 #endif
-        for (auto& range : global_data.used_memory_ranges) {
-            if (range.end.get() > highest_physical_address.get())
-                highest_physical_address = range.end;
+    for (auto& range : global_data.used_memory_ranges) {
+        if (range.end.get() > highest_physical_address.get())
+            highest_physical_address = range.end;
+    }
+    for (auto& region : global_data.physical_memory_ranges) {
+        auto range_end = PhysicalAddress(region.start).offset(region.length);
+        if (range_end.get() > highest_physical_address.get())
+            highest_physical_address = range_end;
+    }
+
+    if (!g_boot_info.boot_framebuffer.paddr.is_null() && g_boot_info.boot_framebuffer.type != BootFramebufferType::None) {
+        PhysicalAddress boot_framebuffer_paddr_end = g_boot_info.boot_framebuffer.paddr.offset(g_boot_info.boot_framebuffer.height * g_boot_info.boot_framebuffer.pitch);
+        if (boot_framebuffer_paddr_end > highest_physical_address)
+            highest_physical_address = boot_framebuffer_paddr_end;
+    }
+
+    // Calculate how many total physical pages the array will have
+    m_physical_page_entries_count = PhysicalAddress::physical_page_index(highest_physical_address.get()) + 1;
+    VERIFY(m_physical_page_entries_count != 0);
+    VERIFY(!Checked<decltype(m_physical_page_entries_count)>::multiplication_would_overflow(m_physical_page_entries_count, sizeof(PhysicalPageEntry)));
+
+    // Calculate how many bytes the array will consume
+    auto physical_page_array_size = m_physical_page_entries_count * sizeof(PhysicalPageEntry);
+    auto physical_page_array_pages = page_round_up(physical_page_array_size).release_value_but_fixme_should_propagate_errors() / PAGE_SIZE;
+    VERIFY(physical_page_array_pages * PAGE_SIZE >= physical_page_array_size);
+
+    // Calculate how many page tables we will need to be able to map them all
+    auto needed_page_table_count = (physical_page_array_pages + 512 - 1) / 512;
+
+    auto physical_page_array_pages_and_page_tables_count = physical_page_array_pages + needed_page_table_count;
+
+    // Now that we know how much memory we need for a contiguous array of PhysicalPage instances, find a memory region that can fit it
+    PhysicalRegion* found_region { nullptr };
+    Optional<size_t> found_region_index;
+    for (size_t i = 0; i < global_data.physical_regions.size(); ++i) {
+        auto& region = global_data.physical_regions[i];
+        if (region->size() >= physical_page_array_pages_and_page_tables_count) {
+            found_region = region;
+            found_region_index = i;
+            break;
         }
-        for (auto& region : global_data.physical_memory_ranges) {
-            auto range_end = PhysicalAddress(region.start).offset(region.length);
-            if (range_end.get() > highest_physical_address.get())
-                highest_physical_address = range_end;
+    }
+
+    if (!found_region) {
+        dmesgln("MM: Need {} bytes for physical page management, but no memory region is large enough!", physical_page_array_pages_and_page_tables_count);
+        VERIFY_NOT_REACHED();
+    }
+
+    VERIFY(global_data.system_memory_info.physical_pages >= physical_page_array_pages_and_page_tables_count);
+    global_data.system_memory_info.physical_pages -= physical_page_array_pages_and_page_tables_count;
+
+    if (found_region->size() == physical_page_array_pages_and_page_tables_count) {
+        // We're stealing the entire region
+        global_data.physical_pages_region = global_data.physical_regions.take(*found_region_index);
+    } else {
+        global_data.physical_pages_region = found_region->try_take_pages_from_beginning(physical_page_array_pages_and_page_tables_count);
+    }
+    global_data.used_memory_ranges.try_append({ UsedMemoryRangeType::PhysicalPages, global_data.physical_pages_region->lower(), global_data.physical_pages_region->upper() }).release_value_but_fixme_should_propagate_errors();
+
+    // Create the bare page directory. This is not a fully constructed page directory and merely contains the allocators!
+    m_kernel_page_directory = PageDirectory::must_create_kernel_page_directory();
+
+    {
+        // Carve out the whole page directory covering the kernel image to make MemoryManager::initialize_physical_pages() happy
+        FlatPtr start_of_range = ((FlatPtr)start_of_kernel_image & ~(FlatPtr)0x1fffff);
+        FlatPtr end_of_range = ((FlatPtr)end_of_kernel_image & ~(FlatPtr)0x1fffff) + 0x200000;
+        MUST(global_data.region_tree.place_specifically(*MUST(Region::create_unbacked()).leak_ptr(), VirtualRange { VirtualAddress(start_of_range), end_of_range - start_of_range }));
+    }
+
+    // Allocate a virtual address range for our array
+    // This looks awkward, but it basically creates a dummy region to occupy the address range permanently.
+    auto& region = *MUST(Region::create_unbacked()).leak_ptr();
+    MUST(global_data.region_tree.place_anywhere(region, RandomizeVirtualAddress::No, physical_page_array_pages * PAGE_SIZE));
+    auto range = region.range();
+
+    // Now that we have our special m_physical_pages_region region with enough pages to hold the entire array
+    // try to map the entire region into kernel space so we always have it
+    // We can't use ensure_pte here because it would try to allocate a PhysicalPage and we don't have the array
+    // mapped yet so we can't create them
+
+    // Create page tables at the beginning of m_physical_pages_region, followed by the PhysicalPageEntry array
+    auto page_tables_base = global_data.physical_pages_region->lower();
+    auto physical_page_array_base = page_tables_base.offset(needed_page_table_count * PAGE_SIZE);
+    auto physical_page_array_current_page = physical_page_array_base.get();
+    auto virtual_page_array_base = range.base().get();
+    auto virtual_page_array_current_page = virtual_page_array_base;
+    for (size_t pt_index = 0; pt_index < needed_page_table_count; pt_index++) {
+        auto virtual_page_base_for_this_pt = virtual_page_array_current_page;
+        auto pt_paddr = page_tables_base.offset(pt_index * PAGE_SIZE);
+        auto* pt = reinterpret_cast<PageTableEntry*>(quickmap_page(pt_paddr));
+        __builtin_memset(pt, 0, PAGE_SIZE);
+        for (size_t pte_index = 0; pte_index < PAGE_SIZE / sizeof(PageTableEntry); pte_index++) {
+            auto& pte = pt[pte_index];
+            pte.set_physical_page_base(physical_page_array_current_page);
+            pte.set_user_allowed(false);
+            pte.set_writable(true);
+            if (Processor::current().has_nx())
+                pte.set_execute_disabled(false);
+            pte.set_global(true);
+            pte.set_present(true);
+
+            physical_page_array_current_page += PAGE_SIZE;
+            virtual_page_array_current_page += PAGE_SIZE;
         }
+        unquickmap_page();
 
-        if (!g_boot_info.boot_framebuffer.paddr.is_null() && g_boot_info.boot_framebuffer.type != BootFramebufferType::None) {
-            PhysicalAddress boot_framebuffer_paddr_end = g_boot_info.boot_framebuffer.paddr.offset(g_boot_info.boot_framebuffer.height * g_boot_info.boot_framebuffer.pitch);
-            if (boot_framebuffer_paddr_end > highest_physical_address)
-                highest_physical_address = boot_framebuffer_paddr_end;
-        }
+        // Hook the page table into the kernel page directory
+        u32 page_directory_index = (virtual_page_base_for_this_pt >> 21) & 0x1ff;
+        auto* pd = reinterpret_cast<PageDirectoryEntry*>(quickmap_page(g_boot_info.boot_pd_kernel));
+        PageDirectoryEntry& pde = pd[page_directory_index];
 
-        // Calculate how many total physical pages the array will have
-        m_physical_page_entries_count = PhysicalAddress::physical_page_index(highest_physical_address.get()) + 1;
-        VERIFY(m_physical_page_entries_count != 0);
-        VERIFY(!Checked<decltype(m_physical_page_entries_count)>::multiplication_would_overflow(m_physical_page_entries_count, sizeof(PhysicalPageEntry)));
+        VERIFY(!pde.is_present()); // Nothing should be using this PD yet
 
-        // Calculate how many bytes the array will consume
-        auto physical_page_array_size = m_physical_page_entries_count * sizeof(PhysicalPageEntry);
-        auto physical_page_array_pages = page_round_up(physical_page_array_size).release_value_but_fixme_should_propagate_errors() / PAGE_SIZE;
-        VERIFY(physical_page_array_pages * PAGE_SIZE >= physical_page_array_size);
+        // We can't use ensure_pte quite yet!
+        pde.set_page_table_base(pt_paddr.get());
+        pde.set_user_allowed(false);
+        pde.set_present(true);
+        pde.set_writable(true);
+        pde.set_global(true);
 
-        // Calculate how many page tables we will need to be able to map them all
-        auto needed_page_table_count = (physical_page_array_pages + 512 - 1) / 512;
+        unquickmap_page();
 
-        auto physical_page_array_pages_and_page_tables_count = physical_page_array_pages + needed_page_table_count;
+        flush_tlb_local(VirtualAddress(virtual_page_base_for_this_pt));
+    }
 
-        // Now that we know how much memory we need for a contiguous array of PhysicalPage instances, find a memory region that can fit it
-        PhysicalRegion* found_region { nullptr };
-        Optional<size_t> found_region_index;
-        for (size_t i = 0; i < global_data.physical_regions.size(); ++i) {
-            auto& region = global_data.physical_regions[i];
-            if (region->size() >= physical_page_array_pages_and_page_tables_count) {
-                found_region = region;
-                found_region_index = i;
-                break;
-            }
-        }
+    // We now have the entire PhysicalPageEntry array mapped!
+    m_physical_page_entries = (PhysicalPageEntry*)range.base().get();
+    for (size_t i = 0; i < m_physical_page_entries_count; i++)
+        new (&m_physical_page_entries[i]) PageTableEntry();
 
-        if (!found_region) {
-            dmesgln("MM: Need {} bytes for physical page management, but no memory region is large enough!", physical_page_array_pages_and_page_tables_count);
-            VERIFY_NOT_REACHED();
-        }
+    // Now we should be able to allocate PhysicalPage instances,
+    // so finish setting up the kernel page directory
+    m_kernel_page_directory->allocate_kernel_directory();
 
-        VERIFY(global_data.system_memory_info.physical_pages >= physical_page_array_pages_and_page_tables_count);
-        global_data.system_memory_info.physical_pages -= physical_page_array_pages_and_page_tables_count;
+    // Now create legit PhysicalPage objects for the page tables we created.
+    virtual_page_array_current_page = virtual_page_array_base;
+    for (size_t pt_index = 0; pt_index < needed_page_table_count; pt_index++) {
+        VERIFY(virtual_page_array_current_page <= range.end().get());
+        auto pt_paddr = page_tables_base.offset(pt_index * PAGE_SIZE);
+        auto physical_page_index = PhysicalAddress::physical_page_index(pt_paddr.get());
+        auto& physical_page_entry = m_physical_page_entries[physical_page_index];
+        auto physical_page = adopt_lock_ref(*new (&physical_page_entry.allocated.physical_page) PhysicalRAMPage(MayReturnToFreeList::No));
 
-        if (found_region->size() == physical_page_array_pages_and_page_tables_count) {
-            // We're stealing the entire region
-            global_data.physical_pages_region = global_data.physical_regions.take(*found_region_index);
-        } else {
-            global_data.physical_pages_region = found_region->try_take_pages_from_beginning(physical_page_array_pages_and_page_tables_count);
-        }
-        global_data.used_memory_ranges.append({ UsedMemoryRangeType::PhysicalPages, global_data.physical_pages_region->lower(), global_data.physical_pages_region->upper() });
+        // NOTE: This leaked ref is matched by the unref in MemoryManager::release_pte()
+        (void)physical_page.leak_ref();
 
-        // Create the bare page directory. This is not a fully constructed page directory and merely contains the allocators!
-        m_kernel_page_directory = PageDirectory::must_create_kernel_page_directory();
+        virtual_page_array_current_page += (PAGE_SIZE / sizeof(PageTableEntry)) * PAGE_SIZE;
+    }
 
-        {
-            // Carve out the whole page directory covering the kernel image to make MemoryManager::initialize_physical_pages() happy
-            FlatPtr start_of_range = ((FlatPtr)start_of_kernel_image & ~(FlatPtr)0x1fffff);
-            FlatPtr end_of_range = ((FlatPtr)end_of_kernel_image & ~(FlatPtr)0x1fffff) + 0x200000;
-            MUST(global_data.region_tree.place_specifically(*MUST(Region::create_unbacked()).leak_ptr(), VirtualRange { VirtualAddress(start_of_range), end_of_range - start_of_range }));
-        }
-
-        // Allocate a virtual address range for our array
-        // This looks awkward, but it basically creates a dummy region to occupy the address range permanently.
-        auto& region = *MUST(Region::create_unbacked()).leak_ptr();
-        MUST(global_data.region_tree.place_anywhere(region, RandomizeVirtualAddress::No, physical_page_array_pages * PAGE_SIZE));
-        auto range = region.range();
-
-        // Now that we have our special m_physical_pages_region region with enough pages to hold the entire array
-        // try to map the entire region into kernel space so we always have it
-        // We can't use ensure_pte here because it would try to allocate a PhysicalPage and we don't have the array
-        // mapped yet so we can't create them
-
-        // Create page tables at the beginning of m_physical_pages_region, followed by the PhysicalPageEntry array
-        auto page_tables_base = global_data.physical_pages_region->lower();
-        auto physical_page_array_base = page_tables_base.offset(needed_page_table_count * PAGE_SIZE);
-        auto physical_page_array_current_page = physical_page_array_base.get();
-        auto virtual_page_array_base = range.base().get();
-        auto virtual_page_array_current_page = virtual_page_array_base;
-        for (size_t pt_index = 0; pt_index < needed_page_table_count; pt_index++) {
-            auto virtual_page_base_for_this_pt = virtual_page_array_current_page;
-            auto pt_paddr = page_tables_base.offset(pt_index * PAGE_SIZE);
-            auto* pt = reinterpret_cast<PageTableEntry*>(quickmap_page(pt_paddr));
-            __builtin_memset(pt, 0, PAGE_SIZE);
-            for (size_t pte_index = 0; pte_index < PAGE_SIZE / sizeof(PageTableEntry); pte_index++) {
-                auto& pte = pt[pte_index];
-                pte.set_physical_page_base(physical_page_array_current_page);
-                pte.set_user_allowed(false);
-                pte.set_writable(true);
-                if (Processor::current().has_nx())
-                    pte.set_execute_disabled(false);
-                pte.set_global(true);
-                pte.set_present(true);
-
-                physical_page_array_current_page += PAGE_SIZE;
-                virtual_page_array_current_page += PAGE_SIZE;
-            }
-            unquickmap_page();
-
-            // Hook the page table into the kernel page directory
-            u32 page_directory_index = (virtual_page_base_for_this_pt >> 21) & 0x1ff;
-            auto* pd = reinterpret_cast<PageDirectoryEntry*>(quickmap_page(g_boot_info.boot_pd_kernel));
-            PageDirectoryEntry& pde = pd[page_directory_index];
-
-            VERIFY(!pde.is_present()); // Nothing should be using this PD yet
-
-            // We can't use ensure_pte quite yet!
-            pde.set_page_table_base(pt_paddr.get());
-            pde.set_user_allowed(false);
-            pde.set_present(true);
-            pde.set_writable(true);
-            pde.set_global(true);
-
-            unquickmap_page();
-
-            flush_tlb_local(VirtualAddress(virtual_page_base_for_this_pt));
-        }
-
-        // We now have the entire PhysicalPageEntry array mapped!
-        m_physical_page_entries = (PhysicalPageEntry*)range.base().get();
-        for (size_t i = 0; i < m_physical_page_entries_count; i++)
-            new (&m_physical_page_entries[i]) PageTableEntry();
-
-        // Now we should be able to allocate PhysicalPage instances,
-        // so finish setting up the kernel page directory
-        m_kernel_page_directory->allocate_kernel_directory();
-
-        // Now create legit PhysicalPage objects for the page tables we created.
-        virtual_page_array_current_page = virtual_page_array_base;
-        for (size_t pt_index = 0; pt_index < needed_page_table_count; pt_index++) {
-            VERIFY(virtual_page_array_current_page <= range.end().get());
-            auto pt_paddr = page_tables_base.offset(pt_index * PAGE_SIZE);
-            auto physical_page_index = PhysicalAddress::physical_page_index(pt_paddr.get());
-            auto& physical_page_entry = m_physical_page_entries[physical_page_index];
-            auto physical_page = adopt_lock_ref(*new (&physical_page_entry.allocated.physical_page) PhysicalRAMPage(MayReturnToFreeList::No));
-
-            // NOTE: This leaked ref is matched by the unref in MemoryManager::release_pte()
-            (void)physical_page.leak_ref();
-
-            virtual_page_array_current_page += (PAGE_SIZE / sizeof(PageTableEntry)) * PAGE_SIZE;
-        }
-
-        dmesgln("MM: Physical page entries: {}", range);
-    });
+    dmesgln("MM: Physical page entries: {}", range);
 }
 
 #ifdef HAS_ADDRESS_SANITIZER
 void MemoryManager::initialize_kasan_shadow_memory()
 {
-    m_global_data.with([&](auto& global_data) {
-        // We map every 8 bytes of normal memory to 1 byte of shadow memory, so we need a 1/9 of total memory for the shadow memory.
-        auto virtual_range = global_data.region_tree.total_range();
-        auto shadow_range_size = MUST(page_round_up(ceil_div(virtual_range.size(), 9ul)));
-        dbgln("MM: Reserving {} bytes for KASAN shadow memory", shadow_range_size);
-
-        auto vmobject = MUST(AnonymousVMObject::try_create_with_size(shadow_range_size, AllocationStrategy::AllocateNow));
-        auto* shadow_region = MUST(Region::create_unplaced(move(vmobject), 0, {}, Memory::Region::Access::ReadWrite)).leak_ptr();
-        auto shadow_range = VirtualRange { virtual_range.base().offset(virtual_range.size() - shadow_range_size), shadow_range_size };
-        MUST(global_data.region_tree.place_specifically(*shadow_region, shadow_range));
-        MUST(shadow_region->map(kernel_page_directory()));
-
-        AddressSanitizer::init(shadow_region->vaddr().get());
+    // This is called early enough that locking doesn't actually matter, so lets just bypass the spinlock to avoid deadlocks.
+    GlobalData* global_data = nullptr;
+    m_global_data.with([&](auto& data) {
+        global_data = &data;
     });
+
+    // We map every 8 bytes of normal memory to 1 byte of shadow memory, so we need a 1/9 of total memory for the shadow memory.
+    auto virtual_range = global_data->region_tree.total_range();
+    auto shadow_range_size = MUST(page_round_up(ceil_div(virtual_range.size(), 9ul)));
+    dbgln("MM: Reserving {} bytes for KASAN shadow memory", shadow_range_size);
+
+    auto vmobject = MUST(AnonymousVMObject::try_create_with_size(shadow_range_size, AllocationStrategy::AllocateNow));
+    auto* shadow_region = MUST(Region::create_unplaced(move(vmobject), 0, {}, Memory::Region::Access::ReadWrite)).leak_ptr();
+    auto shadow_range = VirtualRange { virtual_range.base().offset(virtual_range.size() - shadow_range_size), shadow_range_size };
+    MUST(global_data->region_tree.place_specifically(*shadow_region, shadow_range));
+    MUST(shadow_region->map(kernel_page_directory()));
+
+    AddressSanitizer::init(shadow_region->vaddr().get());
 }
 #endif
 
@@ -1051,7 +1046,6 @@ void MemoryManager::release_pte(PageDirectory& page_directory, VirtualAddress va
 
 UNMAP_AFTER_INIT void MemoryManager::initialize(u32 cpu)
 {
-    dmesgln("Initialize MMU");
     ProcessorSpecific<MemoryManagerData>::initialize();
 
     if (cpu == 0) {
@@ -1089,12 +1083,12 @@ void MemoryManager::validate_syscall_preconditions(Process& process, RegisterSta
         VirtualAddress ip = VirtualAddress { regs.ip() };
         auto* calling_region = MM.find_user_region_from_vaddr(*space, ip);
         if (!calling_region) {
-            dbgln("Syscall from {:p} which has no associated region", ip);
+            dbgln("Syscall from {} which has no associated region", ip);
             return unlock_and_handle_crash("Syscall from unknown region", SIGSEGV);
         }
 
         if (calling_region->is_writable()) {
-            dbgln("Syscall from writable memory at {:p}", ip);
+            dbgln("Syscall from writable memory at {}", ip);
             return unlock_and_handle_crash("Syscall from writable memory", SIGSEGV);
         }
 
@@ -1195,6 +1189,11 @@ ErrorOr<NonnullOwnPtr<Memory::Region>> MemoryManager::allocate_dma_buffer_page(S
 {
     auto page = TRY(allocate_physical_page());
     dma_buffer_page = page;
+
+    // Ensure that the zeroing of the DMA pages is visible for devices.
+    // Use a full memory fence, as a device could theoretically start reading from this DMA region when we issue an MMIO load, so we need to prevent reordering of both loads and stores.
+    full_memory_fence();
+
     // Do not enable Cache for this region as physical memory transfers are performed (Most architectures have this behavior by default)
     return allocate_kernel_region_with_physical_pages({ &page, 1 }, name, access, memory_type);
 }
@@ -1210,6 +1209,11 @@ ErrorOr<NonnullOwnPtr<Memory::Region>> MemoryManager::allocate_dma_buffer_pages(
 {
     VERIFY(!(size % PAGE_SIZE));
     dma_buffer_pages = TRY(allocate_contiguous_physical_pages(size, memory_type));
+
+    // Ensure that the zeroing of the DMA pages is visible for devices.
+    // Use a full memory fence, as a device could theoretically start reading from this DMA region when we issue an MMIO load, so we need to prevent reordering of both loads and stores.
+    full_memory_fence();
+
     // Do not enable Cache for this region as physical memory transfers are performed (Most architectures have this behavior by default)
     return allocate_kernel_region_with_physical_pages(dma_buffer_pages, name, access, memory_type);
 }
@@ -1344,28 +1348,28 @@ void MemoryManager::deallocate_physical_page(PhysicalAddress paddr)
     });
 }
 
-RefPtr<PhysicalRAMPage> MemoryManager::find_free_physical_page(bool committed)
+RefPtr<PhysicalRAMPage> MemoryManager::find_free_physical_page(bool committed, GlobalData& global_data)
 {
     RefPtr<PhysicalRAMPage> page;
-    m_global_data.with([&](auto& global_data) {
-        if (committed) {
-            // Draw from the committed pages pool. We should always have these pages available
-            VERIFY(global_data.system_memory_info.physical_pages_committed > 0);
-            global_data.system_memory_info.physical_pages_committed--;
-        } else {
-            // We need to make sure we don't touch pages that we have committed to
-            if (global_data.system_memory_info.physical_pages_uncommitted == 0)
-                return;
-            global_data.system_memory_info.physical_pages_uncommitted--;
+    if (committed) {
+        // Draw from the committed pages pool. We should always have these pages available
+        VERIFY(global_data.system_memory_info.physical_pages_committed > 0);
+        global_data.system_memory_info.physical_pages_committed--;
+    } else {
+        // We need to make sure we don't touch pages that we have committed to
+        if (global_data.system_memory_info.physical_pages_uncommitted == 0) {
+            dbgln("MM: couldn't find free physical page. Continuing...");
+            return nullptr;
         }
-        for (auto& region : global_data.physical_regions) {
-            page = region->take_free_page();
-            if (!page.is_null()) {
-                ++global_data.system_memory_info.physical_pages_used;
-                break;
-            }
+        global_data.system_memory_info.physical_pages_uncommitted--;
+    }
+    for (auto& region : global_data.physical_regions) {
+        page = region->take_free_page();
+        if (!page.is_null()) {
+            ++global_data.system_memory_info.physical_pages_used;
+            break;
         }
-    });
+    }
 
     if (page.is_null())
         dbgln("MM: couldn't find free physical page. Continuing...");
@@ -1375,7 +1379,9 @@ RefPtr<PhysicalRAMPage> MemoryManager::find_free_physical_page(bool committed)
 
 NonnullRefPtr<PhysicalRAMPage> MemoryManager::allocate_committed_physical_page(Badge<CommittedPhysicalPageSet>, ShouldZeroFill should_zero_fill)
 {
-    auto page = find_free_physical_page(true);
+    auto page = m_global_data.with([&](auto& global_data) {
+        return find_free_physical_page(true, global_data);
+    });
     VERIFY(page);
     if (should_zero_fill == ShouldZeroFill::Yes) {
         InterruptDisabler disabler;
@@ -1388,10 +1394,10 @@ NonnullRefPtr<PhysicalRAMPage> MemoryManager::allocate_committed_physical_page(B
     return page.release_nonnull();
 }
 
-ErrorOr<NonnullRefPtr<PhysicalRAMPage>> MemoryManager::allocate_physical_page(ShouldZeroFill should_zero_fill, bool* did_purge)
+ErrorOr<NonnullRefPtr<PhysicalRAMPage>> MemoryManager::allocate_physical_page(ShouldZeroFill should_zero_fill, bool* did_purge, MemoryType memory_type_for_zero_fill)
 {
-    return m_global_data.with([&](auto&) -> ErrorOr<NonnullRefPtr<PhysicalRAMPage>> {
-        auto page = find_free_physical_page(false);
+    return m_global_data.with([&](auto& global_data) -> ErrorOr<NonnullRefPtr<PhysicalRAMPage>> {
+        auto page = find_free_physical_page(false, global_data);
         bool purged_pages = false;
 
         if (!page) {
@@ -1405,7 +1411,7 @@ ErrorOr<NonnullRefPtr<PhysicalRAMPage>> MemoryManager::allocate_physical_page(Sh
                     return IterationDecision::Continue;
                 if (auto purged_page_count = anonymous_vmobject.purge()) {
                     dbgln("MM: Purge saved the day! Purged {} pages from AnonymousVMObject", purged_page_count);
-                    page = find_free_physical_page(false);
+                    page = find_free_physical_page(false, global_data);
                     purged_pages = true;
                     VERIFY(page);
                     return IterationDecision::Break;
@@ -1421,7 +1427,7 @@ ErrorOr<NonnullRefPtr<PhysicalRAMPage>> MemoryManager::allocate_physical_page(Sh
                 auto& inode_vmobject = static_cast<InodeVMObject&>(vmobject);
                 if (auto released_page_count = inode_vmobject.try_release_clean_pages(1)) {
                     dbgln("MM: Clean inode release saved the day! Released {} pages from InodeVMObject", released_page_count);
-                    page = find_free_physical_page(false);
+                    page = find_free_physical_page(false, global_data);
                     VERIFY(page);
                     return IterationDecision::Break;
                 }
@@ -1434,9 +1440,7 @@ ErrorOr<NonnullRefPtr<PhysicalRAMPage>> MemoryManager::allocate_physical_page(Sh
         }
 
         if (should_zero_fill == ShouldZeroFill::Yes) {
-            // FIXME: To prevent aliasing memory with different memory types, this page should be mapped using the same memory type it will use later for the actual mapping.
-            //        (See the comment above the memset in allocate_contiguous_physical_pages.)
-            auto* ptr = quickmap_page(*page);
+            auto* ptr = quickmap_page(*page, memory_type_for_zero_fill);
             memset(ptr, 0, PAGE_SIZE);
             unquickmap_page();
         }
@@ -1539,7 +1543,7 @@ PageTableEntry* MemoryManager::quickmap_pt(PhysicalAddress pt_paddr)
     return (PageTableEntry*)vaddr.get();
 }
 
-u8* MemoryManager::quickmap_page(PhysicalAddress const& physical_address)
+u8* MemoryManager::quickmap_page(PhysicalAddress physical_address, MemoryType memory_type)
 {
     VERIFY_INTERRUPTS_DISABLED();
     auto& mm_data = get_data();
@@ -1550,6 +1554,7 @@ u8* MemoryManager::quickmap_page(PhysicalAddress const& physical_address)
 
     auto& pte = g_boot_info.boot_pd_kernel_pt1023[pte_idx];
     if (pte.physical_page_base() != physical_address.get()) {
+        pte.set_memory_type(memory_type);
         pte.set_physical_page_base(physical_address.get());
         pte.set_present(true);
         pte.set_writable(true);

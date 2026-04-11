@@ -116,7 +116,9 @@ void RectangularOverlay::render(Gfx::Painter& painter, Screen const& screen)
         if (auto* shadow_bitmap = WindowManager::the().overlay_rect_shadow()) {
             Gfx::StylePainter::paint_simple_rect_shadow(bitmap_painter, new_bitmap->rect(), shadow_bitmap->bitmap(scale_factor), true, true);
         } else {
-            bitmap_painter.fill_rect(new_bitmap->rect(), Color(Color::Black).with_alpha(0xcc));
+            // When no overlay rect shadow is defined use default window frame and overlay background
+            bitmap_painter.fill_rect(new_bitmap->rect(), WindowManager::the().palette().overlay_background());
+            Gfx::StylePainter::current().paint_window_frame(bitmap_painter, new_bitmap->rect(), WindowManager::the().palette());
         }
         render_overlay_bitmap(bitmap_painter);
         m_rendered_bitmaps->add_bitmap(scale_factor, move(new_bitmap));
@@ -212,7 +214,7 @@ Gfx::Font const& ScreenNumberOverlay::font()
 
 void ScreenNumberOverlay::render_overlay_bitmap(Gfx::Painter& painter)
 {
-    painter.draw_text(Gfx::IntRect { {}, rect().size() }, ByteString::formatted("{}", m_screen.index() + 1), font(), Gfx::TextAlignment::Center, Color::White);
+    painter.draw_text(Gfx::IntRect { {}, rect().size() }, ByteString::formatted("{}", m_screen.index() + 1), font(), Gfx::TextAlignment::Center, WindowManager::the().palette().overlay_text());
 }
 
 Gfx::IntRect ScreenNumberOverlay::calculate_content_rect_for_screen(Screen& screen)
@@ -346,7 +348,7 @@ void WindowGeometryOverlay::window_rect_changed()
 
 void WindowGeometryOverlay::render_overlay_bitmap(Gfx::Painter& painter)
 {
-    painter.draw_text(Gfx::IntRect { {}, rect().size() }, m_label, WindowManager::the().font(), Gfx::TextAlignment::Center, Color::White);
+    painter.draw_text(Gfx::IntRect { {}, rect().size() }, m_label, WindowManager::the().font(), Gfx::TextAlignment::Center, WindowManager::the().palette().overlay_text());
 }
 
 DndOverlay::DndOverlay(ByteString const& text, Gfx::Bitmap const* bitmap)
@@ -400,7 +402,9 @@ void WindowStackSwitchOverlay::render_overlay_bitmap(Gfx::Painter& painter)
     // We should come up with a more elegant way to get the content rectangle
     auto content_rect = Gfx::IntRect({}, m_content_size).centered_within({ {}, rect().size() });
     auto active_color = WindowManager::the().palette().selection();
-    auto inactive_color = WindowManager::the().palette().window().darkened(0.9f);
+    auto inactive_color = WindowManager::the().palette().overlay_text().luminosity() > 128
+        ? WindowManager::the().palette().window().darkened(0.9f)
+        : WindowManager::the().palette().disabled_text_front();
     for (int y = 0; y < m_rows; y++) {
         for (int x = 0; x < m_columns; x++) {
             Gfx::IntRect rect {

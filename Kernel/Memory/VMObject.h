@@ -63,13 +63,17 @@ protected:
     template<typename Callback>
     void for_each_region(Callback);
 
+    template<typename Callback>
+    void for_each_region_locked(Callback);
+
+    void remap_regions_locked();
     void remap_regions();
     bool remap_regions_one_page(size_t page_index, NonnullRefPtr<PhysicalRAMPage> page);
 
     IntrusiveListNode<VMObject> m_list_node;
     FixedArray<RefPtr<PhysicalRAMPage>> m_physical_pages;
 
-    mutable RecursiveSpinlock<LockRank::None> m_lock {};
+    mutable Spinlock<LockRank::None> m_lock {};
 
 private:
     VMObject& operator=(VMObject const&) = delete;
@@ -80,13 +84,22 @@ private:
 
 public:
     using AllInstancesList = IntrusiveList<&VMObject::m_list_node>;
-    static SpinlockProtected<VMObject::AllInstancesList, LockRank::None>& all_instances();
+    static RecursiveSpinlockProtected<VMObject::AllInstancesList, LockRank::None>& all_instances();
 };
 
 template<typename Callback>
 inline void VMObject::for_each_region(Callback callback)
 {
     SpinlockLocker lock(m_lock);
+    for (auto& region : m_regions) {
+        callback(region);
+    }
+}
+
+template<typename Callback>
+inline void VMObject::for_each_region_locked(Callback callback)
+{
+    VERIFY(m_lock.is_locked());
     for (auto& region : m_regions) {
         callback(region);
     }

@@ -77,13 +77,11 @@ static EntropySource s_entropy_source_interrupts { EntropySource::Static::Interr
             "    pushq %rdi\n"                                                 \
             "    pushq %rsp \n" /* set TrapFrame::regs */                      \
             "    subq $" __STRINGIFY(TRAP_FRAME_SIZE - 8) ", %rsp \n"          \
-            "    subq $0x8, %rsp\n" /* align stack */                          \
-            "    lea 0x8(%rsp), %rdi \n"                                       \
+            "    movq %rsp, %rdi \n"                                           \
             "    cld\n"                                                        \
             "    call enter_trap_no_irq \n"                                    \
-            "    lea 0x8(%rsp), %rdi \n"                                       \
+            "    movq %rsp, %rdi \n"                                           \
             "    call " #title "_handler\n"                                    \
-            "    addq $0x8, %rsp\n" /* undo alignment */                       \
             "    jmp common_trap_exit \n"                                      \
         );                                                                     \
     }
@@ -205,6 +203,12 @@ void page_fault_handler(TrapFrame* trap)
     }
 
     PageFault fault { regs.exception_code, VirtualAddress { fault_address } };
+
+    if (Processor::current().has_feature(CPUFeature::SMAP))
+        fault.set_was_smap_disabled(trap->regs->rflags & 0x40000);
+    else
+        fault.set_was_smap_disabled(true);
+
     fault.handle(regs);
 }
 

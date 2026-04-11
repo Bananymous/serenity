@@ -1,9 +1,10 @@
 /*
- * Copyright (c) 2024, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2024, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Platform.h>
 #include <AK/Types.h>
 
 #include <Kernel/Arch/riscv64/CSR.h>
@@ -24,7 +25,7 @@
 namespace Kernel {
 
 // This function has to fit into one page as it will be identity mapped.
-[[gnu::aligned(PAGE_SIZE)]] [[noreturn]] static void enter_kernel_helper(FlatPtr satp, FlatPtr kernel_entry, FlatPtr kernel_sp, FlatPtr boot_info_vaddr)
+[[gnu::aligned(PAGE_SIZE)]] [[noreturn]] NEVER_INLINE static void enter_kernel_helper(FlatPtr satp, FlatPtr kernel_entry, FlatPtr kernel_sp, FlatPtr boot_info_vaddr)
 {
     // Switch the active root page table to argument 0.
     // This will immediately take effect, but we won't crash as this function is identity mapped.
@@ -48,9 +49,9 @@ namespace Kernel {
         wfi
         j 1b
     )"
-                 :
-                 : "r"(a0), "r"(sp), [satp] "r"(satp), [kernel_sp] "r"(kernel_sp), [kernel_entry] "r"(kernel_entry)
-                 : "t0", "memory");
+        :
+        : "r"(a0), "r"(sp), [satp] "r"(satp), [kernel_sp] "r"(kernel_sp), [kernel_entry] "r"(kernel_entry)
+        : "t0", "memory");
 
     __builtin_unreachable();
 }

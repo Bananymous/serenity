@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, Nico Weber <thakis@chromium.org>
+ * Copyright (c) 2023-2025, Nico Weber <thakis@chromium.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,13 +11,13 @@
 
 namespace Gfx::ICC {
 
-static ProfileHeader rgb_header()
+static ProfileHeader profile_header(ColorSpace data_color_space, ColorSpace connection_space)
 {
     ProfileHeader header;
     header.version = Version(4, 0x40);
     header.device_class = DeviceClass::DisplayDevice;
-    header.data_color_space = ColorSpace::RGB;
-    header.connection_space = ColorSpace::PCSXYZ;
+    header.data_color_space = data_color_space;
+    header.connection_space = connection_space;
     header.creation_timestamp = MUST(DateTime::from_time_t(0));
     header.rendering_intent = RenderingIntent::Perceptual;
     header.pcs_illuminant = XYZ { 0.9642, 1.0, 0.8249 };
@@ -38,7 +38,274 @@ static ErrorOr<NonnullRefPtr<XYZTagData>> XYZ_data(XYZ xyz)
     return try_make_ref_counted<XYZTagData>(0, 0, move(xyzs));
 }
 
-ErrorOr<NonnullRefPtr<TagData>> sRGB_curve()
+static EMatrix3x3 identity_matrix()
+{
+    return EMatrix3x3 {
+        S15Fixed16(1.0),
+        S15Fixed16(0.0),
+        S15Fixed16(0.0),
+        S15Fixed16(0.0),
+        S15Fixed16(1.0),
+        S15Fixed16(0.0),
+        S15Fixed16(0.0),
+        S15Fixed16(0.0),
+        S15Fixed16(1.0),
+    };
+}
+
+template<UnsignedIntegral T>
+Vector<T> make_2x2x2_cube()
+{
+    Vector<T> values;
+    auto add_entry = [&values](T x, T y, T z) {
+        values.append(x);
+        values.append(y);
+        values.append(z);
+    };
+    auto const N = NumericLimits<T>::max();
+    add_entry(0, 0, 0);
+    add_entry(0, 0, N);
+    add_entry(0, N, 0);
+    add_entry(0, N, N);
+    add_entry(N, 0, 0);
+    add_entry(N, 0, N);
+    add_entry(N, N, 0);
+    add_entry(N, N, N);
+    return values;
+}
+
+template<UnsignedIntegral T>
+CLUTData make_2x2x2_cube_clut()
+{
+    Vector<u8, 4> number_of_grid_points_in_dimension;
+    for (int i = 0; i < 3; ++i)
+        number_of_grid_points_in_dimension.append(2);
+    return CLUTData {
+        move(number_of_grid_points_in_dimension),
+        make_2x2x2_cube<u16>()
+    };
+}
+
+ErrorOr<NonnullRefPtr<Profile>> IdentityLAB()
+{
+    // Identity mapping between CIELAB and PCSLAB.
+
+    auto header = profile_header(ColorSpace::CIELAB, ColorSpace::PCSLAB);
+    header.device_class = DeviceClass::ColorSpace;
+
+    OrderedHashMap<TagSignature, NonnullRefPtr<TagData>> tag_table;
+
+    TRY(tag_table.try_set(profileDescriptionTag, TRY(en_US("SerenityOS Identity LAB"sv))));
+    TRY(tag_table.try_set(copyrightTag, TRY(en_US("Public Domain"sv))));
+
+    // Use an identity 8-bit mft1 lookup table.
+    auto e_matrix = identity_matrix();
+
+    Vector<u8> input_tables;
+    for (int c = 0; c < 3; ++c) {
+        // mft1 requires 256 entries.
+        for (int i = 0; i < 256; ++i)
+            input_tables.append(i);
+    }
+
+    auto clut_values = make_2x2x2_cube<u8>();
+    Vector<u8> output_tables = input_tables;
+
+    auto mft1 = TRY(try_make_ref_counted<Lut8TagData>(0, 0, e_matrix,
+        3, 3, 2,
+        256, 256,
+        move(input_tables), move(clut_values), move(output_tables)));
+    TRY(tag_table.try_set(AToB0Tag, mft1));
+    TRY(tag_table.try_set(BToA0Tag, mft1));
+
+    // White point.
+    TRY(tag_table.try_set(mediaWhitePointTag, TRY(XYZ_data(header.pcs_illuminant))));
+
+    return Profile::create(header, move(tag_table));
+}
+
+ErrorOr<NonnullRefPtr<Profile>> IdentityLAB_mft2()
+{
+    // Identity mapping between CIELAB and PCSXYZ, using an unnecessarily large mft2.
+
+    auto header = profile_header(ColorSpace::CIELAB, ColorSpace::PCSLAB);
+    header.device_class = DeviceClass::ColorSpace;
+
+    OrderedHashMap<TagSignature, NonnullRefPtr<TagData>> tag_table;
+
+    TRY(tag_table.try_set(profileDescriptionTag, TRY(en_US("SerenityOS Identity LAB, mft2"sv))));
+    TRY(tag_table.try_set(copyrightTag, TRY(en_US("Public Domain"sv))));
+
+    // mft1 is plenty; this is just for testing mft2 LAB codepaths.
+    EMatrix3x3 e_matrix = identity_matrix();
+
+    Vector<u16> input_tables;
+    for (int c = 0; c < 3; ++c) {
+        // mft2 allows between 2 and 4096 entries. If there are just two values, it linearly maps between them.
+        input_tables.append(0);
+        input_tables.append(65535);
+    }
+
+    auto clut_values = make_2x2x2_cube<u16>();
+    Vector<u16> output_tables = input_tables;
+
+    auto mft2 = TRY(try_make_ref_counted<Lut16TagData>(0, 0, e_matrix,
+        3, 3, 2,
+        2, 2,
+        move(input_tables), move(clut_values), move(output_tables)));
+    TRY(tag_table.try_set(AToB0Tag, mft2));
+    TRY(tag_table.try_set(BToA0Tag, mft2));
+
+    // White point.
+    TRY(tag_table.try_set(mediaWhitePointTag, TRY(XYZ_data(header.pcs_illuminant))));
+
+    return Profile::create(header, move(tag_table));
+}
+
+ErrorOr<NonnullRefPtr<Profile>> IdentityXYZ_D50()
+{
+    // Identity mapping between nCIEXYZ and PCSXYZ.
+
+    auto header = profile_header(ColorSpace::nCIEXYZ, ColorSpace::PCSXYZ);
+    header.device_class = DeviceClass::ColorSpace;
+
+    OrderedHashMap<TagSignature, NonnullRefPtr<TagData>> tag_table;
+
+    TRY(tag_table.try_set(profileDescriptionTag, TRY(en_US("SerenityOS Identity XYZ"sv))));
+    TRY(tag_table.try_set(copyrightTag, TRY(en_US("Public Domain"sv))));
+
+    // "An 8-bit PCSXYZ encoding has not been defined", so use an identity 16-bit mft2 lookup table.
+    EMatrix3x3 e_matrix = identity_matrix();
+
+    Vector<u16> input_tables;
+    for (int c = 0; c < 3; ++c) {
+        // mft2 allows between 2 and 4096 entries. If there are just two values, it linearly maps between them.
+        input_tables.append(0);
+        input_tables.append(65535);
+    }
+
+    auto clut_values = make_2x2x2_cube<u16>();
+    Vector<u16> output_tables = input_tables;
+
+    auto mft2 = TRY(try_make_ref_counted<Lut16TagData>(0, 0, e_matrix,
+        3, 3, 2,
+        2, 2,
+        move(input_tables), move(clut_values), move(output_tables)));
+    TRY(tag_table.try_set(AToB0Tag, mft2));
+    TRY(tag_table.try_set(BToA0Tag, mft2));
+
+    // White point.
+    TRY(tag_table.try_set(mediaWhitePointTag, TRY(XYZ_data(header.pcs_illuminant))));
+
+    return Profile::create(header, move(tag_table));
+}
+
+static EMatrix3x4 identity_matrix_3x4()
+{
+    return EMatrix3x4 {
+        S15Fixed16(1.0),
+        S15Fixed16(0.0),
+        S15Fixed16(0.0),
+        S15Fixed16(0.0),
+        S15Fixed16(1.0),
+        S15Fixed16(0.0),
+        S15Fixed16(0.0),
+        S15Fixed16(0.0),
+        S15Fixed16(1.0),
+
+        S15Fixed16(0.0),
+        S15Fixed16(0.0),
+        S15Fixed16(0.0),
+    };
+}
+
+static ErrorOr<NonnullRefPtr<ParametricCurveTagData>> identity_curve()
+{
+    Array<S15Fixed16, 7> curve_parameters = { 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+    return try_make_ref_counted<ParametricCurveTagData>(0, 0, ParametricCurveTagData::FunctionType::Type0, curve_parameters);
+}
+
+static ErrorOr<Vector<LutCurveType>> make_identity_curves()
+{
+    Vector<LutCurveType> identity_curves;
+    auto linear = TRY(identity_curve());
+    for (int c = 0; c < 3; ++c)
+        TRY(identity_curves.try_append(linear));
+    return identity_curves;
+}
+
+static ErrorOr<NonnullRefPtr<Profile>> Identity_mABmBA(StringView description, ColorSpace data_color_space, ColorSpace connection_space, Optional<CLUTData> clut)
+{
+    auto header = profile_header(data_color_space, connection_space);
+    header.device_class = DeviceClass::ColorSpace;
+
+    OrderedHashMap<TagSignature, NonnullRefPtr<TagData>> tag_table;
+
+    TRY(tag_table.try_set(profileDescriptionTag, TRY(en_US(description))));
+    TRY(tag_table.try_set(copyrightTag, TRY(en_US("Public Domain"sv))));
+
+    Vector<LutCurveType> identity_curves = TRY(make_identity_curves());
+
+    Optional<Vector<LutCurveType>> a_curves;
+    if (clut.has_value())
+        a_curves = identity_curves;
+
+    Optional<Vector<LutCurveType>> m_curves;
+    Optional<EMatrix3x4> e_matrix;
+
+    // FIXME: Could make these two optional too.
+    m_curves = identity_curves;
+    e_matrix = identity_matrix_3x4();
+
+    Vector<LutCurveType> b_curves = identity_curves;
+
+    auto a_to_b = TRY(try_make_ref_counted<LutAToBTagData>(0, 0,
+        3, 3,
+        a_curves, clut, m_curves, e_matrix, b_curves));
+    TRY(tag_table.try_set(AToB0Tag, a_to_b));
+
+    auto b_to_a = TRY(try_make_ref_counted<LutBToATagData>(0, 0,
+        3, 3,
+        move(b_curves), e_matrix, move(m_curves), move(clut), move(a_curves)));
+    TRY(tag_table.try_set(BToA0Tag, b_to_a));
+
+    // White point.
+    TRY(tag_table.try_set(mediaWhitePointTag, TRY(XYZ_data(header.pcs_illuminant))));
+
+    return Profile::create(header, move(tag_table));
+}
+
+ErrorOr<NonnullRefPtr<Profile>> IdentityLAB_mABmBA_no_clut()
+{
+    // Identity mapping between CIELAB and PCSLAB, using mAB / mBA tags.
+    return Identity_mABmBA("SerenityOS Identity LAB, mAB/mBA, no CLUT"sv, ColorSpace::CIELAB, ColorSpace::PCSLAB, {});
+}
+
+ErrorOr<NonnullRefPtr<Profile>> IdentityLAB_mABmBA_u8_clut()
+{
+    // Identity mapping between CIELAB and PCSLAB, using mAB / mBA tags.
+    return Identity_mABmBA("SerenityOS Identity LAB, mAB/mBA, u8 CLUT"sv, ColorSpace::CIELAB, ColorSpace::PCSLAB, make_2x2x2_cube_clut<u8>());
+}
+
+ErrorOr<NonnullRefPtr<Profile>> IdentityLAB_mABmBA_u16_clut()
+{
+    // Identity mapping between CIELAB and PCSLAB, using mAB / mBA tags.
+    return Identity_mABmBA("SerenityOS Identity LAB, mAB/mBA, u16 CLUT"sv, ColorSpace::CIELAB, ColorSpace::PCSLAB, make_2x2x2_cube_clut<u16>());
+}
+
+ErrorOr<NonnullRefPtr<Profile>> IdentityXYZ_D50_mABmBA_no_clut()
+{
+    // Identity mapping between CIELAB and PCSLAB, using mAB / mBA tags.
+    return Identity_mABmBA("SerenityOS Identity XYZ, mAB/mBA, no CLUT"sv, ColorSpace::nCIEXYZ, ColorSpace::PCSXYZ, {});
+}
+
+ErrorOr<NonnullRefPtr<Profile>> IdentityXYZ_D50_mABmBA_u16_clut()
+{
+    // Identity mapping between CIELAB and PCSLAB, using mAB / mBA tags.
+    return Identity_mABmBA("SerenityOS Identity XYZ, mAB/mBA, u16 CLUT"sv, ColorSpace::nCIEXYZ, ColorSpace::PCSXYZ, make_2x2x2_cube_clut<u16>());
+}
+
+ErrorOr<NonnullRefPtr<ParametricCurveTagData>> sRGB_curve()
 {
     // Numbers from https://en.wikipedia.org/wiki/SRGB#From_sRGB_to_CIE_XYZ
     Array<S15Fixed16, 7> curve_parameters = { 2.4, 1 / 1.055, 0.055 / 1.055, 1 / 12.92, 0.04045 };
@@ -54,7 +321,7 @@ ErrorOr<NonnullRefPtr<Profile>> sRGB()
     //        Explain why, and why this picks the numbers it does.
     //        In the meantime, https://github.com/SerenityOS/serenity/pull/17714 has a few notes.
 
-    auto header = rgb_header();
+    auto header = profile_header(ColorSpace::RGB, ColorSpace::PCSXYZ);
 
     OrderedHashMap<TagSignature, NonnullRefPtr<TagData>> tag_table;
 

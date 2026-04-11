@@ -38,6 +38,8 @@
 
 namespace Web::Painting {
 
+class DisplayList;
+
 struct DrawGlyphRun {
     NonnullRefPtr<Gfx::GlyphRun> glyph_run;
     Color color;
@@ -53,7 +55,7 @@ struct DrawGlyphRun {
 struct FillRect {
     Gfx::IntRect rect;
     Color color;
-    Vector<Gfx::Path> clip_paths;
+    RefPtr<DisplayList> text_clip;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
     void translate_by(Gfx::IntPoint const& offset) { rect.translate_by(offset); }
@@ -74,7 +76,7 @@ struct DrawScaledImmutableBitmap {
     NonnullRefPtr<Gfx::ImmutableBitmap> bitmap;
     Gfx::IntRect src_rect;
     Gfx::ScalingMode scaling_mode;
-    Vector<Gfx::Path> clip_paths;
+    RefPtr<DisplayList> text_clip;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return dst_rect; }
     void translate_by(Gfx::IntPoint const& offset) { dst_rect.translate_by(offset); }
@@ -118,7 +120,7 @@ struct PopStackingContext { };
 struct PaintLinearGradient {
     Gfx::IntRect gradient_rect;
     LinearGradientData linear_gradient_data;
-    Vector<Gfx::Path> clip_paths;
+    RefPtr<DisplayList> text_clip;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return gradient_rect; }
 
@@ -158,11 +160,8 @@ struct PaintTextShadow {
 struct FillRectWithRoundedCorners {
     Gfx::IntRect rect;
     Color color;
-    Gfx::CornerRadius top_left_radius;
-    Gfx::CornerRadius top_right_radius;
-    Gfx::CornerRadius bottom_left_radius;
-    Gfx::CornerRadius bottom_right_radius;
-    Vector<Gfx::Path> clip_paths;
+    CornerRadii corner_radii;
+    RefPtr<DisplayList> text_clip;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
     void translate_by(Gfx::IntPoint const& offset) { rect.translate_by(offset); }
@@ -308,7 +307,7 @@ struct PaintRadialGradient {
     RadialGradientData radial_gradient_data;
     Gfx::IntPoint center;
     Gfx::IntSize size;
-    Vector<Gfx::Path> clip_paths;
+    RefPtr<DisplayList> text_clip;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
 
@@ -319,7 +318,7 @@ struct PaintConicGradient {
     Gfx::IntRect rect;
     ConicGradientData conic_gradient_data;
     Gfx::IntPoint position;
-    Vector<Gfx::Path> clip_paths;
+    RefPtr<DisplayList> text_clip;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
 

@@ -63,7 +63,7 @@ struct __MakeSigned<long long> {
 };
 template<>
 struct __MakeSigned<unsigned char> {
-    using Type = char;
+    using Type = signed char;
 };
 template<>
 struct __MakeSigned<unsigned short> {
@@ -83,14 +83,8 @@ struct __MakeSigned<unsigned long long> {
 };
 template<>
 struct __MakeSigned<char> {
-    using Type = char;
+    using Type = signed char;
 };
-#if ARCH(AARCH64)
-template<>
-struct __MakeSigned<wchar_t> {
-    using Type = void;
-};
-#endif
 
 template<typename T>
 using MakeSigned = typename __MakeSigned<T>::Type;
@@ -177,9 +171,9 @@ static constexpr FlatPtr explode_byte(u8 b)
 {
     FlatPtr value = b;
     if constexpr (sizeof(FlatPtr) == 4)
-        return value << 24 | value << 16 | value << 8 | value;
+        return value * 0x01010101;
     else if constexpr (sizeof(FlatPtr) == 8)
-        return value << 56 | value << 48 | value << 40 | value << 32 | value << 24 | value << 16 | value << 8 | value;
+        return value * 0x01010101'01010101;
 }
 
 static_assert(explode_byte(0xff) == static_cast<FlatPtr>(0xffffffffffffffffull));

@@ -118,7 +118,7 @@ UNMAP_AFTER_INIT void StorageManagement::enumerate_pci_controllers(bool nvme_pol
             if (subclass_code == SubclassID::SATAController
                 && device_identifier.prog_if() == PCI::MassStorage::SATAProgIF::AHCI) {
                 if (auto ahci_controller_or_error = AHCIController::initialize(device_identifier); !ahci_controller_or_error.is_error())
-                    m_controllers.append(ahci_controller_or_error.value());
+                    m_controllers.try_append(ahci_controller_or_error.value()).release_value_but_fixme_should_propagate_errors();
                 else
                     dmesgln("Unable to initialize AHCI controller: {}", ahci_controller_or_error.error());
             }
@@ -127,13 +127,13 @@ UNMAP_AFTER_INIT void StorageManagement::enumerate_pci_controllers(bool nvme_pol
                 if (controller.is_error()) {
                     dmesgln("Unable to initialize NVMe controller: {}", controller.error());
                 } else {
-                    m_controllers.append(controller.release_value());
+                    m_controllers.try_append(controller.release_value()).release_value_but_fixme_should_propagate_errors();
                 }
             }
             if (VirtIOBlockController::is_handled(device_identifier)) {
                 if (virtio_controller.is_null()) {
                     auto controller = make_ref_counted<VirtIOBlockController>();
-                    m_controllers.append(controller);
+                    m_controllers.try_append(controller).release_value_but_fixme_should_propagate_errors();
                     virtio_controller = controller;
                 }
                 if (auto res = virtio_controller->add_device(device_identifier); res.is_error()) {
@@ -152,7 +152,7 @@ UNMAP_AFTER_INIT void StorageManagement::enumerate_pci_controllers(bool nvme_pol
                 if (sdhc_or_error.is_error()) {
                     dmesgln("PCI: Failed to initialize SD Host Controller ({} - {}): {}", device_identifier.address(), device_identifier.hardware_id(), sdhc_or_error.error());
                 } else {
-                    m_controllers.append(sdhc_or_error.release_value());
+                    m_controllers.try_append(sdhc_or_error.release_value()).release_value_but_fixme_should_propagate_errors();
                 }
             }
         };
@@ -346,9 +346,10 @@ UNMAP_AFTER_INIT void StorageManagement::determine_block_boot_device()
     // Note: We simply fetch the corresponding BlockDevice with the major and minor parameters.
     // We don't try to accept and resolve a partition number as it will make this code much more
     // complicated. This rule is also explained in the boot_device_addressing(7) manual page.
-    auto device = Device::acquire_by_type_and_major_minor_numbers(DeviceNodeType::Block, parameters_view[0], parameters_view[1]);
-    if (device && device->is_block_device())
-        m_boot_block_device = *static_ptr_cast<BlockDevice>(device);
+    Device::run_by_type_and_major_minor_numbers(DeviceNodeType::Block, parameters_view[0], parameters_view[1], [&](RefPtr<Device> device) {
+        if (device && device->is_block_device())
+            m_boot_block_device = *static_ptr_cast<BlockDevice>(device);
+    });
 }
 
 UNMAP_AFTER_INIT void StorageManagement::determine_boot_device_with_logical_unit_number()
@@ -452,8 +453,6 @@ u32 StorageManagement::generate_controller_id()
 
 ErrorOr<NonnullRefPtr<VFSRootContext>> StorageManagement::create_first_vfs_root_context() const
 {
-    auto vfs_root_context = TRY(VFSRootContext::create_with_empty_ramfs());
-
     auto const* fs_type_initializer = TRY(VirtualFileSystem::find_filesystem_type_initializer("ext2"sv));
     VERIFY(fs_type_initializer);
     auto mount_file = TRY(MountFile::create(*fs_type_initializer, root_mount_flags));
@@ -466,19 +465,7 @@ ErrorOr<NonnullRefPtr<VFSRootContext>> StorageManagement::create_first_vfs_root_
     auto description = TRY(OpenFileDescription::try_create(boot_device_description.release_nonnull()));
 
     auto fs = TRY(FileBackedFileSystem::create_and_append_filesystems_list_from_mount_file_and_description(mount_file, description));
-
-    // NOTE: Fake a mounted count of 1 so the called VirtualFileSystem function in the
-    // next pivot_root logic block thinks everything is OK.
-    fs->mounted_count().with([](auto& mounted_count) {
-        mounted_count++;
-    });
-
-    TRY(VirtualFileSystem::pivot_root_by_copying_mounted_fs_instance(*vfs_root_context, *fs, root_mount_flags));
-    // NOTE: Return the mounted count to normal now we have it really mounted.
-    fs->mounted_count().with([](auto& mounted_count) {
-        mounted_count--;
-    });
-    return vfs_root_context;
+    return TRY(VFSRootContext::create_with_filesystem(VFSRootContext::AddToGlobalContextList::Yes, fs));
 }
 
 UNMAP_AFTER_INIT void StorageManagement::initialize(bool poll)

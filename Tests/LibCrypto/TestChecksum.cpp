@@ -8,6 +8,7 @@
 #include <LibCrypto/Checksum/CRC32.h>
 #include <LibCrypto/Checksum/cksum.h>
 #include <LibTest/TestCase.h>
+#include <arpa/inet.h>
 
 TEST_CASE(test_adler32)
 {

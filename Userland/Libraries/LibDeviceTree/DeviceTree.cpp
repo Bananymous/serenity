@@ -161,11 +161,11 @@ ErrorOr<Vector<Interrupt>> Node::interrupts(DeviceTree const& device_tree) const
 
             auto interrupt_cells = interrupt_cells_prop->as<u32>();
 
-            auto interrupt_identifier = TRY(stream.read_in_place<u8 const>(interrupt_cells * sizeof(u32)));
+            auto interrupt_specifier = TRY(stream.read_in_place<u8 const>(interrupt_cells * sizeof(u32)));
 
             TRY(interrupts.try_append(Interrupt {
                 .domain_root = &domain_root,
-                .interrupt_identifier = interrupt_identifier,
+                .interrupt_specifier = interrupt_specifier,
             }));
         }
 
@@ -200,7 +200,7 @@ ErrorOr<Vector<Interrupt>> Node::interrupts(DeviceTree const& device_tree) const
     for (size_t i = 0; i < interrupt_count; i++) {
         interrupts[i] = Interrupt {
             .domain_root = &domain_root,
-            .interrupt_identifier = interrupts_raw.slice(i * interrupt_cells * sizeof(u32), interrupt_cells * sizeof(u32)),
+            .interrupt_specifier = interrupts_raw.slice(i * interrupt_cells * sizeof(u32), interrupt_cells * sizeof(u32)),
         };
     }
 
@@ -339,7 +339,7 @@ ErrorOr<Address> Ranges::translate_child_bus_address_to_parent_bus_address(Addre
     // If the property is defined with an <empty> value, it specifies that the parent and child address space is identical,
     // and no address translation is required.
     if (entry_count() == 0)
-        return addr;
+        return addr.clone().release_value_but_fixme_should_propagate_errors();
 
     for (size_t i = 0; i < entry_count(); i++) {
         if (auto translation_or_error = MUST(entry(i)).translate_child_bus_address_to_parent_bus_address(addr); !translation_or_error.is_error())
@@ -354,7 +354,7 @@ ErrorOr<Address> Node::translate_child_bus_address_to_root_address(Address const
     dbgln_if(DEVICETREE_DEBUG, "DeviceTree: Translating bus address {:hex-dump}", addr.raw());
 
     auto const* current_node = this;
-    auto current_address = addr;
+    auto current_address = addr.clone().release_value_but_fixme_should_propagate_errors();
 
     while (!current_node->is_root()) {
         // 2.3.8 ranges

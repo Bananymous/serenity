@@ -4,16 +4,18 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/Bus/PCI/Driver.h>
+#include <Kernel/Bus/PCI/IDs.h>
 #include <Kernel/Bus/VirtIO/Transport/PCIe/TransportLink.h>
 #include <Kernel/Sections.h>
 #include <Kernel/Security/Random/VirtIO/RNG.h>
 
 namespace Kernel::VirtIO {
 
-UNMAP_AFTER_INIT NonnullLockRefPtr<RNG> RNG::must_create_for_pci_instance(PCI::DeviceIdentifier const& device_identifier)
+UNMAP_AFTER_INIT ErrorOr<NonnullRefPtr<RNG>> RNG::create_for_pci_instance(PCI::DeviceIdentifier const& device_identifier)
 {
-    auto pci_transport_link = MUST(PCIeTransportLink::create(device_identifier));
-    return adopt_lock_ref_if_nonnull(new RNG(move(pci_transport_link))).release_nonnull();
+    auto pci_transport_link = TRY(PCIeTransportLink::create(device_identifier));
+    return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) RNG(move(pci_transport_link))));
 }
 
 UNMAP_AFTER_INIT ErrorOr<void> RNG::initialize_virtio_resources()
@@ -70,6 +72,22 @@ void RNG::request_entropy_from_host()
     QueueChain chain(queue);
     chain.add_buffer_to_chain(m_entropy_buffer->physical_page(0)->paddr(), PAGE_SIZE, BufferType::DeviceWritable);
     supply_chain_and_notify(REQUESTQ, chain);
+}
+
+PCI_DRIVER(VirtIOEntropyDriver);
+
+ErrorOr<void> VirtIOEntropyDriver::probe(PCI::DeviceIdentifier const& pci_device_identifier) const
+{
+    if (pci_device_identifier.hardware_id().vendor_id != PCI::VendorID::VirtIO
+        || pci_device_identifier.hardware_id().device_id != PCI::DeviceID::VirtIOEntropy)
+        return ENOTSUP;
+
+    auto rng = TRY(RNG::create_for_pci_instance(pci_device_identifier));
+    TRY(rng->initialize_virtio_resources());
+
+    (void)rng.leak_ref();
+
+    return {};
 }
 
 }

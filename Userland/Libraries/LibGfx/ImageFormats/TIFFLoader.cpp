@@ -182,6 +182,8 @@ public:
             m_image_width = m_metadata.image_width().value();
         if (m_metadata.predictor().has_value())
             m_predictor = m_metadata.predictor().value();
+        if (m_metadata.color_map().has_value())
+            m_color_map = m_metadata.color_map().release_value();
         m_alpha_channel_index = alpha_channel_index();
     }
 
@@ -320,16 +322,14 @@ private:
             u64 const green_offset = 1 * size;
             u64 const blue_offset = 2 * size;
 
-            auto const color_map = *m_metadata.color_map();
-
-            if (blue_offset + index >= color_map.size())
+            if (blue_offset + index >= m_color_map.size())
                 return Error::from_string_literal("TIFFImageDecoderPlugin: Color index is out of range");
 
             // FIXME: ColorMap's values are always 16-bits, stop truncating them when we support 16 bits bitmaps
             return Color(
-                color_map[red_offset + index] >> 8,
-                color_map[green_offset + index] >> 8,
-                color_map[blue_offset + index] >> 8,
+                m_color_map[red_offset + index] >> 8,
+                m_color_map[green_offset + index] >> 8,
+                m_color_map[blue_offset + index] >> 8,
                 alpha);
         }
 
@@ -589,8 +589,8 @@ private:
     ErrorOr<void> set_next_ifd(u32 ifd_offset)
     {
         if (ifd_offset != 0) {
-            if (ifd_offset < TRY(m_stream->tell()))
-                return Error::from_string_literal("TIFFImageDecoderPlugin: Can not accept an IFD pointing to previous data");
+            if (TRY(m_known_ifds.try_set(ifd_offset)) != HashSetResult::InsertedNewEntry)
+                return Error::from_string_literal("TIFFImageDecoderPlugin: Can not accept an IFD pointing to already visited data");
 
             m_next_ifd = Optional<u32> { ifd_offset };
         } else {
@@ -599,7 +599,7 @@ private:
         return {};
     }
 
-    ErrorOr<void> read_next_idf_offset()
+    ErrorOr<void> read_next_ifd_offset()
     {
         auto const next_block_position = TRY(read_value<u32>());
         TRY(set_next_ifd(next_block_position));
@@ -629,7 +629,7 @@ private:
         if (magic_number != 42)
             return Error::from_string_literal("TIFFImageDecoderPlugin: Invalid magic number");
 
-        TRY(read_next_idf_offset());
+        TRY(read_next_ifd_offset());
 
         return {};
     }
@@ -659,7 +659,7 @@ private:
             TRY(m_stream->seek(next_tag_offset));
         }
 
-        TRY(read_next_idf_offset());
+        TRY(read_next_ifd_offset());
         return {};
     }
 
@@ -683,6 +683,7 @@ private:
                 for (u32 i = 0; i < count; ++i)
                     result.empend(typename TypePromoter<T>::Type(TRY(read_value<T>())));
             }
+            dbgln_if(TIFF_DEBUG, "Read values {}", result);
             return result;
         };
 
@@ -733,6 +734,8 @@ private:
         auto const type = TRY(tiff_type_from_u16(raw_type));
         auto const count = TRY(read_value<u32>());
 
+        dbgln_if(TIFF_DEBUG, "Reading tag {} of type {} with count {}", tag, raw_type, count);
+
         Checked<u32> checked_size = size_of_type(type);
         checked_size *= count;
 
@@ -746,6 +749,7 @@ private:
                 return value;
             }
             auto const offset = TRY(read_value<u32>());
+            dbgln_if(TIFF_DEBUG, "Tag data out of line at offset {}", offset);
             return read_tiff_value(type, count, offset);
         }()));
 
@@ -769,6 +773,7 @@ private:
     RefPtr<CMYKBitmap> m_cmyk_bitmap {};
 
     ByteOrder m_byte_order {};
+    HashTable<u32> m_known_ifds {};
     Optional<u32> m_next_ifd {};
 
     ExifMetadata m_metadata {};
@@ -778,6 +783,7 @@ private:
     Vector<u32, 4> m_bits_per_sample {};
     u32 m_image_width {};
     Predictor m_predictor {};
+    Vector<u32> m_color_map;
 
     Optional<u8> m_alpha_channel_index {};
 };

@@ -38,7 +38,7 @@ target_link_libraries(fuzz-syscalls PRIVATE LibSystem)
 serenity_test("crash.cpp" Kernel MAIN_ALREADY_DEFINED)
 
 set(LIBTEST_BASED_SOURCES
-    TestAnonymousMmap.cpp
+    TestEFault.cpp
     TestEmptyPrivateInodeVMObject.cpp
     TestEmptySharedInodeVMObject.cpp
     TestExt2FS.cpp
@@ -46,8 +46,11 @@ set(LIBTEST_BASED_SOURCES
     TestInvalidUIDSet.cpp
     TestSFNUtilities.cpp
     TestSharedInodeVMObject.cpp
+    TestPageFaultRace.cpp
     TestPosixFallocate.cpp
+    TestPosixSpawn.cpp
     TestPrivateInodeVMObject.cpp
+    TestPtrace.cpp
     TestKernelAlarm.cpp
     TestKernelFilePermissions.cpp
     TestKernelPledge.cpp
@@ -58,23 +61,30 @@ set(LIBTEST_BASED_SOURCES
     TestProcFSWrite.cpp
     TestSigAltStack.cpp
     TestSigHandler.cpp
-    TestSigWait.cpp
+    TestSignalDispatch.cpp
     TestTCPSocket.cpp
+    TestWait.cpp
+    TestWXProtection.cpp
 )
 
 if (ENABLE_KERNEL_COVERAGE_COLLECTION)
     list(APPEND LIBTEST_BASED_SOURCES TestKCOV.cpp)
 endif()
 
-if (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
-    list(APPEND LIBTEST_BASED_SOURCES TestMemoryDeviceMmap.cpp)
+if (NOT ENABLE_USERSPACE_COVERAGE_COLLECTION)
+    # FIXME: Make these tests generate valid coverage files.
+    list(APPEND LIBTEST_BASED_SOURCES
+        TestAnonymousMmap.cpp
+        TestSigWait.cpp
+    )
 endif()
 
-# FIXME: Don't panic on SafeMem access faults on aarch64
-if (NOT CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-    list(APPEND LIBTEST_BASED_SOURCES TestEFault.cpp)
+if (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+    list(APPEND LIBTEST_BASED_SOURCES TestMemoryDeviceMmap.cpp)
 endif()
 
 foreach(libtest_source IN LISTS LIBTEST_BASED_SOURCES)
     serenity_test("${libtest_source}" Kernel LIBS LibSystem)
 endforeach()
+
+target_link_libraries(TestPageFaultRace PRIVATE LibThreading)

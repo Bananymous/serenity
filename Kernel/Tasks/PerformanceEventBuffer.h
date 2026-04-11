@@ -80,7 +80,7 @@ struct [[gnu::packed]] ReadPerformanceEvent {
 enum class FilesystemEventType : u8 {
     Open,
     Close,
-    Readv,
+    Preadv,
     Read,
     Pread
 };
@@ -97,11 +97,12 @@ struct [[gnu::packed]] CloseEventData {
     size_t filename_index;
 };
 
-struct [[gnu::packed]] ReadvEventData {
+struct [[gnu::packed]] PreadvEventData {
     int fd;
     size_t filename_index;
     // struct iovec* iov; // TODO: Implement
     // int iov_count; // TODO: Implement
+    off_t offset;
 };
 
 struct [[gnu::packed]] ReadEventData {
@@ -131,7 +132,7 @@ struct [[gnu::packed]] FilesystemEvent {
     union {
         OpenEventData open;
         CloseEventData close;
-        ReadvEventData readv;
+        PreadvEventData preadv;
         ReadEventData read;
         PreadEventData pread;
     } data;
@@ -206,7 +207,7 @@ private:
     size_t m_count { 0 };
     NonnullOwnPtr<KBuffer> m_buffer;
 
-    SpinlockProtected<HashMap<NonnullOwnPtr<KString>, size_t>, LockRank::None> m_strings;
+    RecursiveSpinlockProtected<HashMap<NonnullOwnPtr<KString>, size_t>, LockRank::None> m_strings;
 };
 
 extern bool g_profiling_all_threads;

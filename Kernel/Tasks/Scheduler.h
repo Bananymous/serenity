@@ -12,6 +12,7 @@
 #include <AK/Types.h>
 #include <Kernel/Forward.h>
 #include <Kernel/Locking/Spinlock.h>
+#include <Kernel/Locking/SpinlockProtected.h>
 #include <Kernel/Time/TimeManagement.h>
 #include <Kernel/UnixTypes.h>
 
@@ -21,12 +22,24 @@ struct RegisterState;
 
 extern Thread* g_finalizer;
 extern WaitQueue* g_finalizer_wait_queue;
-extern Atomic<bool> g_finalizer_has_work;
+extern SpinlockProtected<bool, LockRank::None> g_finalizer_has_work;
 extern RecursiveSpinlock<LockRank::None> g_scheduler_lock;
 
 struct TotalTimeScheduled {
     u64 total { 0 };
     u64 total_kernel { 0 };
+};
+
+enum class ScheduleResult {
+    Success,
+    NoRunnableThreadFound,
+    Delayed,
+    YieldAgain, // Only returned by pick_next().
+};
+
+enum class [[nodiscard]] ShouldYield {
+    Yes,
+    No,
 };
 
 class Scheduler {
@@ -36,9 +49,9 @@ public:
     static void set_idle_thread(Thread* idle_thread);
     static void timer_tick();
     [[noreturn]] static void start();
-    static void pick_next();
-    static void yield();
-    static void context_switch(Thread*);
+    static ScheduleResult pick_next();
+    static ScheduleResult yield();
+    static ShouldYield context_switch(Thread*);
     static void enter_current(Thread& prev_thread);
     static void leave_on_first_switch(InterruptsState);
     static void prepare_after_exec();

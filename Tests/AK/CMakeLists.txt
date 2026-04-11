@@ -23,6 +23,7 @@ set(AK_TEST_SOURCES
     TestComplex.cpp
     TestConstrainedStream.cpp
     TestCoroutine.cpp
+    TestDOSPackedTime.cpp
     TestDisjointChunks.cpp
     TestDistinctNumeric.cpp
     TestDoublyLinkedList.cpp
@@ -34,6 +35,7 @@ set(AK_TEST_SOURCES
     TestFixedPoint.cpp
     TestFloatingPoint.cpp
     TestFloatingPointParsing.cpp
+    TestFloatingPointStringConversions.cpp
     TestFlyString.cpp
     TestFormat.cpp
     TestFunction.cpp
@@ -49,6 +51,7 @@ set(AK_TEST_SOURCES
     TestIndexSequence.cpp
     TestInsertionSort.cpp
     TestIntegerMath.cpp
+    TestInternetChecksum.cpp
     TestIntrusiveList.cpp
     TestIntrusiveRedBlackTree.cpp
     TestJSON.cpp

@@ -672,8 +672,8 @@ TraversableNavigable::HistoryStepResult TraversableNavigable::apply_the_history_
             //    that is synchronous navigation steps with a target navigable not contained in navigablesThatMustWaitBeforeHandlingSyncNavigation.
             //   2. Remove steps from traversable's session history traversal queue's algorithm set.
             for (auto entry = m_session_history_traversal_queue->first_synchronous_navigation_steps_with_target_navigable_not_contained_in(navigables_that_must_wait_before_handling_sync_navigation);
-                 entry;
-                 entry = m_session_history_traversal_queue->first_synchronous_navigation_steps_with_target_navigable_not_contained_in(navigables_that_must_wait_before_handling_sync_navigation)) {
+                entry;
+                entry = m_session_history_traversal_queue->first_synchronous_navigation_steps_with_target_navigable_not_contained_in(navigables_that_must_wait_before_handling_sync_navigation)) {
 
                 // 3. Set traversable's running nested apply history step to true.
                 m_running_nested_apply_history_step = true;
@@ -1352,16 +1352,16 @@ JS::GCPtr<DOM::Node> TraversableNavigable::currently_focused_area()
     return candidate;
 }
 
-void TraversableNavigable::paint(Web::DevicePixelRect const& content_rect, Gfx::Bitmap& target, Web::PaintOptions paint_options)
+void TraversableNavigable::paint(DevicePixelRect const& content_rect, Gfx::Bitmap& target, Web::PaintOptions paint_options)
 {
-    Painting::DisplayList display_list;
+    auto display_list = Painting::DisplayList::create();
     Painting::DisplayListRecorder display_list_recorder(display_list);
 
     Gfx::IntRect bitmap_rect { {}, content_rect.size().to_type<int>() };
-    display_list_recorder.fill_rect(bitmap_rect, Web::CSS::SystemColor::canvas());
+    display_list_recorder.fill_rect(bitmap_rect, CSS::SystemColor::canvas());
 
-    Web::HTML::Navigable::PaintConfig paint_config;
-    paint_config.paint_overlay = paint_options.paint_overlay == Web::PaintOptions::PaintOverlay::Yes;
+    HTML::Navigable::PaintConfig paint_config;
+    paint_config.paint_overlay = paint_options.paint_overlay == PaintOptions::PaintOverlay::Yes;
     paint_config.should_show_line_box_borders = paint_options.should_show_line_box_borders;
     paint_config.has_focus = paint_options.has_focus;
     record_display_list(display_list_recorder, paint_config);
@@ -1369,8 +1369,8 @@ void TraversableNavigable::paint(Web::DevicePixelRect const& content_rect, Gfx::
     auto display_list_player_type = page().client().display_list_player_type();
     if (display_list_player_type == DisplayListPlayerType::GPU) {
 #ifdef HAS_ACCELERATED_GRAPHICS
-        Web::Painting::DisplayListPlayerGPU player(*paint_options.accelerated_graphics_context, target);
-        display_list.execute(player);
+        Painting::DisplayListPlayerGPU player(*paint_options.accelerated_graphics_context, target);
+        player.execute(display_list);
 #else
         static bool has_warned_about_configuration = false;
 
@@ -1380,8 +1380,8 @@ void TraversableNavigable::paint(Web::DevicePixelRect const& content_rect, Gfx::
         }
 #endif
     } else {
-        Web::Painting::DisplayListPlayerCPU player(target, display_list_player_type == DisplayListPlayerType::CPUWithExperimentalTransformSupport);
-        display_list.execute(player);
+        Painting::DisplayListPlayerCPU player(target, display_list_player_type == DisplayListPlayerType::CPUWithExperimentalTransformSupport);
+        player.execute(display_list);
     }
 }
 

@@ -223,6 +223,17 @@ struct AK::Formatter<B> : Formatter<StringView> {
     }
 };
 
+TEST_CASE(format_character_as_integer)
+{
+    EXPECT_EQ(ByteString::formatted("{:x}", 'A'), "41");
+
+    if constexpr (IsSigned<char>) {
+        EXPECT_EQ(ByteString::formatted("{:x}", '\x86'), "-7a");
+    } else {
+        EXPECT_EQ(ByteString::formatted("{:x}", '\x86'), "86");
+    }
+}
+
 TEST_CASE(format_if_supported)
 {
     EXPECT_EQ(ByteString::formatted("{}", FormatIfSupported { A {} }), "?");
@@ -394,6 +405,26 @@ TEST_CASE(vector_format)
     {
         Vector<Vector<ByteString>> v { { "1"sv, "2"sv }, { "3"sv, "4"sv } };
         EXPECT_EQ(ByteString::formatted("{}", v), "[ [ 1, 2 ], [ 3, 4 ] ]");
+    }
+}
+
+TEST_CASE(read_only_bytes_format)
+{
+    {
+        Vector<u8> v { 1, 2, 3, 4 };
+        EXPECT_EQ(ByteString::formatted("{}", v), "[ 1, 2, 3, 4 ]");
+    }
+    {
+        Vector<u8> v { 1, 2, 3, 4 };
+        EXPECT_EQ(ByteString::formatted("{:hex-dump}", v), "01020304");
+    }
+    {
+        Vector<u8> v { 97, 98, 99, 100 };
+        EXPECT_EQ(ByteString::formatted("{:s}", v), "abcd");
+    }
+    {
+        Vector<u8> v { 97, 98, 99, 100 };
+        EXPECT_EQ(ByteString::formatted("{:c}", v), "abcd");
     }
 }
 

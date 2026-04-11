@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2023, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -21,17 +21,25 @@ namespace Kernel::RISCV64::CSR {
 
 // 2.2 CSR Listing
 enum class Address : u16 {
-    // Supervisor Trap Setup
-    SSTATUS = 0x100,
-    SIE = 0x104,
-    STVEC = 0x105,
-
-    // Supervisor Protection and Translation
-    SATP = 0x180,
+    // Unprivileged Vector CSRs
+    VSTART_ = 0x008,
+    VCSR = 0x00f,
+    VL = 0xc20,
+    VTYPE = 0xc21,
+    VLENB = 0xc22,
 
     // Unprivileged Counters/Timers
     CYCLE = 0xc00,
     TIME = 0xc01,
+
+    // Supervisor Trap Setup
+    SSTATUS = 0x100,
+    SIE = 0x104,
+    STVEC = 0x105,
+    STIMECMP = 0x14d,
+
+    // Supervisor Protection and Translation
+    SATP = 0x180,
 };
 
 template<Address address>
@@ -39,8 +47,8 @@ ALWAYS_INLINE FlatPtr read()
 {
     FlatPtr ret;
     asm volatile("csrr %0, %1"
-                 : "=r"(ret)
-                 : "i"(address));
+        : "=r"(ret)
+        : "i"(address));
     return ret;
 }
 
@@ -55,8 +63,8 @@ ALWAYS_INLINE FlatPtr read_and_set_bits(FlatPtr bit_mask)
 {
     FlatPtr ret;
     asm volatile("csrrs %0, %1, %2"
-                 : "=r"(ret)
-                 : "i"(address), "Kr"(bit_mask));
+        : "=r"(ret)
+        : "i"(address), "Kr"(bit_mask));
     return ret;
 }
 

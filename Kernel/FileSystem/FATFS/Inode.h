@@ -61,17 +61,14 @@ private:
     static ErrorOr<void> create_unique_sfn_for(FATEntry& entry, NonnullRefPtr<SFNUtils::SFN> sfn, Vector<ByteBuffer> existing_sfns);
     static ErrorOr<void> encode_known_good_sfn_for(FATEntry& entry, StringView name);
     static ErrorOr<Vector<FATLongFileNameEntry>> create_lfn_entries(StringView name, u8 checksum);
+    static ErrorOr<void> fill_in_creation_time(FATEntry&, UnixDateTime const&);
 
     ErrorOr<RawPtr<Vector<u32>>> get_cluster_list();
-    ErrorOr<Vector<u32>> compute_cluster_list(FATFS&, u32 first_cluster);
+    ErrorOr<Vector<u32>> compute_cluster_list();
     ErrorOr<Vector<BlockBasedFileSystem::BlockIndex>> get_block_list();
     ErrorOr<NonnullOwnPtr<KBuffer>> read_block_list();
     ErrorOr<RefPtr<FATInode>> traverse(Function<ErrorOr<bool>(RefPtr<FATInode>)> callback);
     u32 first_cluster() const;
-    // This overload of `first_cluster` does not rely on the base Inode
-    // already being created to determine the FAT version. It is used
-    // during FATInode creation (create()).
-    static u32 first_cluster(FATVersion const version, u16 first_cluster_low, u16 first_cluster_high);
     ErrorOr<void> allocate_and_add_cluster_to_chain();
     ErrorOr<void> remove_last_cluster_from_chain();
     ErrorOr<Vector<FATEntryLocation>> allocate_entries(u32 count);

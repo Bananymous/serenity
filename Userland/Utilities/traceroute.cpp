@@ -6,6 +6,7 @@
 
 #include <AK/Assertions.h>
 #include <AK/ByteString.h>
+#include <AK/InternetChecksum.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/ElapsedTimer.h>
 #include <LibCore/System.h>
@@ -15,7 +16,6 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
-#include <serenity.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -85,7 +85,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             request.header = { ICMP_ECHO, 0, 0, { { 0, 0 } } };
             bool fits = ttl_number.copy_characters_to_buffer(request.msg, sizeof(request.msg));
             VERIFY(fits);
-            request.header.checksum = internet_checksum(&request, sizeof(request));
+            request.header.checksum = bit_cast<u16>(InternetChecksum({ &request, sizeof(request) }).digest());
 
             m_timer.start();
             TRY(Core::System::sendto(fd, &request, sizeof(request), 0, (sockaddr*)&host_address, sizeof(host_address)));

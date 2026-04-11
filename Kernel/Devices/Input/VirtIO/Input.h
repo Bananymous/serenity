@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2024, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -22,7 +22,7 @@ class Input final
     : public AtomicRefCounted<Input>
     , public VirtIO::Device {
 public:
-    static NonnullLockRefPtr<Input> must_create_for_pci_instance(PCI::DeviceIdentifier const&);
+    static ErrorOr<NonnullRefPtr<Input>> create_for_pci_instance(PCI::DeviceIdentifier const&);
     ~Input() override = default;
 
     ErrorOr<void> initialize_virtio_resources() override;

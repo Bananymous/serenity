@@ -76,13 +76,8 @@
 #    define AK_OS_LINUX
 #endif
 
-#if defined(__APPLE__) && defined(__MACH__) && !defined(__IOS__)
+#if defined(__APPLE__) && defined(__MACH__)
 #    define AK_OS_MACOS
-#    define AK_OS_BSD_GENERIC
-#endif
-
-#if defined(__IOS__)
-#    define AK_OS_IOS
 #    define AK_OS_BSD_GENERIC
 #endif
 
@@ -270,15 +265,7 @@
 #    define CLOCK_REALTIME_COARSE CLOCK_REALTIME
 #endif
 
-#ifndef AK_SYSTEM_CACHE_ALIGNMENT_SIZE
-#    if ARCH(AARCH64) || ARCH(X86_64)
-#        define AK_SYSTEM_CACHE_ALIGNMENT_SIZE 64
-#    else
-#        define AK_SYSTEM_CACHE_ALIGNMENT_SIZE 128
-#    endif
-#endif /* AK_SYSTEM_CACHE_ALIGNMENT_SIZE */
-
-#ifdef AK_CACHE_ALIGNED
-#    undef AK_CACHE_ALIGNED
-#endif
+// NOTE: __GCC_DESTRUCTIVE_SIZE can change depending on compiler options, so neither of these two macros should be
+//       used when a stable ABI is required (e.g. for ports, which may use different compilation options).
+#define AK_SYSTEM_CACHE_ALIGNMENT_SIZE __GCC_DESTRUCTIVE_SIZE
 #define AK_CACHE_ALIGNED alignas(AK_SYSTEM_CACHE_ALIGNMENT_SIZE)

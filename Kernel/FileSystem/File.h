@@ -120,6 +120,7 @@ public:
     virtual bool is_socket() const { return false; }
     virtual bool is_inode_watcher() const { return false; }
     virtual bool is_mount_file() const { return false; }
+    virtual bool is_unshared_resource_file() const { return false; }
     virtual bool is_loop_device() const { return false; }
 
     virtual bool is_regular_file() const { return false; }
@@ -133,7 +134,7 @@ protected:
 
     void evaluate_block_conditions()
     {
-        if (Processor::current_in_irq() != 0) {
+        if (Processor::current_in_irq()) {
             // If called from an IRQ handler we need to delay evaluation
             // and unblocking of waiting threads. Note that this File
             // instance may be deleted until the deferred call is executed!

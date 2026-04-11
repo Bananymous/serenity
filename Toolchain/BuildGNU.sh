@@ -6,7 +6,6 @@ set -eo pipefail
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# shellcheck source=/dev/null
 . "${DIR}/../Meta/shell_include.sh"
 
 exit_if_running_as_root "Do not run BuildGNU.sh as root, your Build directory will become root-owned"
@@ -14,7 +13,7 @@ exit_if_running_as_root "Do not run BuildGNU.sh as root, your Build directory wi
 echo "$DIR"
 
 ARCH=${ARCH:-"x86_64"}
-TARGET="$ARCH-pc-serenity"
+TARGET="$ARCH-serenity"
 PREFIX="$DIR/Local/$ARCH"
 BUILD="$DIR/../Build/$ARCH"
 SYSROOT="$BUILD/Root"
@@ -76,8 +75,8 @@ BINUTILS_BASE_URL="https://ftpmirror.gnu.org/gnu/binutils"
 
 # Note: If you bump the gcc version, you also have to update the matching
 #       GCC_VERSION variable in the project's root CMakeLists.txt
-GCC_VERSION="14.2.0"
-GCC_MD5SUM="2268420ba02dc01821960e274711bde0"
+GCC_VERSION="15.2.0"
+GCC_MD5SUM="b861b092bf1af683c46a8aa2e689a6fd"
 GCC_NAME="gcc-$GCC_VERSION"
 GCC_PKG="${GCC_NAME}.tar.xz"
 GCC_BASE_URL="https://ftpmirror.gnu.org/gnu/gcc"
@@ -237,8 +236,7 @@ pushd "$DIR/Build/$ARCH"
         buildstep "binutils/configure" "$DIR"/Tarballs/$BINUTILS_NAME/configure --prefix="$PREFIX" \
                                                  --target="$TARGET" \
                                                  --with-sysroot="$SYSROOT" \
-                                                 --enable-static \
-                                                 --disable-shared \
+                                                 --disable-host-shared \
                                                  --disable-nls \
                                                  --with-system-zlib \
                                                  ${CI:+"--quiet"} || exit 1
@@ -266,8 +264,7 @@ pushd "$DIR/Build/$ARCH"
                                             --with-sysroot="$SYSROOT" \
                                             --disable-nls \
                                             --disable-libstdcxx-pch \
-                                            --enable-static \
-                                            --disable-shared \
+                                            --disable-host-shared \
                                             --enable-languages=c,c++,objc,obj-c++ \
                                             --enable-default-pie \
                                             --enable-lto \
@@ -291,6 +288,6 @@ pushd "$DIR/Build/$ARCH"
 
 popd
 
-pushd "$DIR/Local/$ARCH/$ARCH-pc-serenity/bin"
+pushd "$DIR/Local/$ARCH/$ARCH-serenity/bin"
     buildstep "mold_symlink" ln -s ../../../mold/bin/mold ld.mold
 popd

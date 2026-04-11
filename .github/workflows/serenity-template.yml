@@ -36,10 +36,10 @@ jobs:
       # Pull requests can trail behind `master` and can cause breakage if merging before running the CI checks on an updated branch.
       # Luckily, GitHub creates and maintains a merge branch that is updated whenever the target or source branch is modified. By
       # checking this branch out, we gain a stabler `master` at the cost of reproducibility.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         if: ${{ github.event_name != 'pull_request' }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         if: ${{ github.event_name == 'pull_request' }}
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
@@ -49,6 +49,11 @@ jobs:
         with:
           os: 'Serenity'
           arch: ${{ inputs.arch }}
+
+      - name: Set Disk Size for Coverage Builds
+        if: ${{ inputs.coverage == 'ON' }}
+        # Using 5GiB here is arbitrary.
+        run: echo "SERENITY_DISK_SIZE_BYTES=5368709120" >> $GITHUB_ENV
 
       # === PREPARE FOR BUILDING ===
 
@@ -87,7 +92,7 @@ jobs:
 
       - name: Build jakt toolchain
         if: ${{ steps.cache-restore.output.jakt_prebuilt_hit != 'true' }}
-        run: ARCH="${{ inputs.arch }}" CXX=g++-13 ${{ github.workspace }}/Toolchain/BuildJakt.sh
+        run: ARCH="${{ inputs.arch }}" CXX=g++-14 ${{ github.workspace }}/Toolchain/BuildJakt.sh
 
       - name: Create Build Environment
         if: ${{ inputs.debug_options == 'ALL_DEBUG' }}
@@ -98,8 +103,8 @@ jobs:
             -DSERENITY_ARCH=${{ inputs.arch }} \
             -DSERENITY_TOOLCHAIN=${{ inputs.toolchain }} \
             -DBUILD_LAGOM=ON \
-            -DCMAKE_C_COMPILER=gcc-13 \
-            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_C_COMPILER=gcc-14 \
+            -DCMAKE_CXX_COMPILER=g++-14 \
             -DENABLE_ALL_DEBUG_FACILITIES=ON \
             -DENABLE_PCI_IDS_DOWNLOAD=OFF \
             -DENABLE_USB_IDS_DOWNLOAD=OFF
@@ -115,8 +120,8 @@ jobs:
           cmake -S Meta/CMake/Superbuild -B Build/superbuild -GNinja \
             -DSERENITY_ARCH=${{ inputs.arch }} \
             -DSERENITY_TOOLCHAIN=${{ inputs.toolchain }} \
-            -DCMAKE_C_COMPILER=gcc-13 \
-            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_C_COMPILER=gcc-14 \
+            -DCMAKE_CXX_COMPILER=g++-14 \
             -DENABLE_UNDEFINED_SANITIZER=ON \
             -DUNDEFINED_BEHAVIOR_IS_FATAL=ON \
             -DENABLE_USERSPACE_COVERAGE_COLLECTION=${{ inputs.coverage }} \
@@ -135,6 +140,7 @@ jobs:
           CCACHE_DIR: ${{ env.SERENITY_CCACHE_DIR }}
 
       - name: Save Caches
+        if: ${{ inputs.coverage == 'OFF' }}
         uses: ./.github/actions/cache-save
         with:
           arch: ${{ inputs.arch }}
@@ -157,7 +163,7 @@ jobs:
         run: ninja install && ninja qemu-image
 
       - name: Run On-Target Tests
-        if: ${{ inputs.debug_options == 'NORMAL_DEBUG' && inputs.arch != 'aarch64' && inputs.arch != 'riscv64' }}
+        if: ${{ inputs.debug_options == 'NORMAL_DEBUG' }}
         working-directory: ${{ steps.build-parameters.outputs.build_directory }}
         env:
           SERENITY_QEMU_CPU: "max,vmx=off"
@@ -200,12 +206,11 @@ jobs:
           SERENITY_ARCH: ${{ inputs.arch }}
 
       # FIXME: Deploy the static html pages somewhere
-      # FIXME: Alter script to also (instead?) produce a raw coverage.txt file for ingestion into sonar cloud
       # Note: tmp_profile_data/Coverage.profdata has the entire combined profile data, but creating the raw txt requires
       #       all of the instrumented binaries and the profdata file.
       - name: Upload Coverage Results
-        if: ${{ inputs.coverage == 'ON' }}
-        uses: actions/upload-artifact@v4
+        if: ${{ inputs.coverage == 'ON' && github.event_name != 'pull_request' }}
+        uses: actions/upload-artifact@v7
         with:
           name: serenity-coverage
           path: ${{ steps.build-parameters.outputs.build_directory }}/reports

@@ -1,13 +1,13 @@
 #!/usr/bin/env -S bash ../.port_include.sh
 port='llvm'
 useconfigure='true'
-version='20.1.0'
+version='22.1.0'
 workdir="llvm-project-${version}.src"
 configopts=(
     "-DCMAKE_TOOLCHAIN_FILE=${SERENITY_BUILD_DIR}/CMakeToolchain.txt"
 )
 files=(
-    "https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/llvm-project-${version}.src.tar.xz#4579051e3c255fb4bb795d54324f5a7f3ef79bd9181e44293d7ee9a7f62aad9a"
+    "https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/llvm-project-${version}.src.tar.xz#25d2e2adc4356d758405dd885fcfd6447bce82a90eb78b6b87ce0934bd077173"
 )
 depends=(
     "ncurses"
@@ -21,12 +21,20 @@ configure() {
     host_env
 
     if [ "$SERENITY_TOOLCHAIN" = "Clang" ]; then
-        stdlib=""
-        unwindlib=""
+        linker="lld"
+        objcopy="llvm-objcopy"
+        rtlib="compiler-rt"
+        stdlib="libc++"
+        unwindlib="libunwind"
+        use_llvm_unwinder="ON"
         exclude_atomic_builtin="OFF"
     else
+        linker="ld"
+        objcopy="objcopy"
+        rtlib="libgcc"
         stdlib="libstdc++"
         unwindlib="libgcc"
+        use_llvm_unwinder="OFF"
         # Atomic builtins can't be cross-compiled with GCC. Use the libatomic port
         # if the program you're building has references to symbols like __atomic_load.
         exclude_atomic_builtin="ON"
@@ -36,6 +44,8 @@ configure() {
     cmake ${workdir}/llvm \
         -G Ninja \
         -B llvm-build "${configopts[@]}" \
+        -DCLANG_DEFAULT_OBJCOPY=$objcopy \
+        -DCLANG_DEFAULT_RTLIB=$rtlib \
         -DCLANG_DEFAULT_CXX_STDLIB=$stdlib \
         -DCLANG_DEFAULT_UNWINDLIB=$unwindlib \
         -DCMAKE_BUILD_TYPE=MinSizeRel \
@@ -43,10 +53,12 @@ configure() {
         -DCOMPILER_RT_BUILD_CRT=ON \
         -DCOMPILER_RT_BUILD_ORC=OFF \
         -DCOMPILER_RT_EXCLUDE_ATOMIC_BUILTIN=$exclude_atomic_builtin \
+        -DCOMPILER_RT_USE_LLVM_UNWINDER=$use_llvm_unwinder \
         -DCOMPILER_RT_OS_DIR=serenity \
         -DCROSS_TOOLCHAIN_FLAGS_NATIVE="-DCMAKE_C_COMPILER=$CC;-DCMAKE_CXX_COMPILER=$CXX" \
         -DHAVE_LIBRT=OFF \
-        -DLLVM_DEFAULT_TARGET_TRIPLE=$SERENITY_ARCH-pc-serenity \
+        -DLLVM_APPEND_VC_REV=OFF \
+        -DLLVM_DEFAULT_TARGET_TRIPLE=$SERENITY_ARCH-serenity \
         -DLLVM_ENABLE_PROJECTS="clang;lld;compiler-rt" \
         -DLLVM_HAVE_LIBXAR=OFF \
         -DLLVM_INCLUDE_BENCHMARKS=OFF \

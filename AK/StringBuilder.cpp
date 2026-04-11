@@ -8,7 +8,6 @@
 #include <AK/ByteBuffer.h>
 #include <AK/Checked.h>
 #include <AK/PrintfImplementation.h>
-#include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/StringView.h>
 #include <AK/UnicodeUtils.h>
@@ -17,6 +16,7 @@
 #ifndef KERNEL
 #    include <AK/ByteString.h>
 #    include <AK/FlyString.h>
+#    include <AK/String.h>
 #    include <AK/Utf16View.h>
 #endif
 
@@ -307,7 +307,7 @@ ErrorOr<void> StringBuilder::try_append_escaped_for_json(StringView string)
             TRY(try_append("\\\\"sv));
             break;
         default:
-            if (ch >= 0 && ch <= 0x1f)
+            if (bit_cast<u8>(ch) <= 0x1f)
                 TRY(try_appendff("\\u{:04x}", ch));
             else
                 TRY(try_append(ch));

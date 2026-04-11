@@ -1,43 +1,18 @@
 # Patches for bdwgc on SerenityOS
 
-## `0001-Teach-os_dep-and-gcconfig.h-about-serenity.patch`
+## `0001-test-Set-NTHREADS-to-0.patch`
 
-Teach os_dep and gcconfig.h about serenity
+test: Set NTHREADS to 0
 
+It crashes otherwise:
 
-## `0002-Error-on-unknown-arch.patch`
-
-Error on unknown arch
-
-
-## `0003-Teach-dyn_load.c-about-serenity.patch`
-
-Teach dyn_load.c about serenity
-
-
-## `0004-Teach-bdwgc-about-serenity-signals.patch`
-
-Teach bdwgc about serenity signals
-
-Serenity doesn't have the realtime POSIX signals, so use SIGXCPU and
-SIGXFSZ instead.
-
-## `0005-Make-the-collector-build-with-threads.patch`
-
-Make the collector build with threads
-
-In an extremely limited way for now:
-- No extra threads
-    More threads always lead to exactly one borked thread that's stuck
-    in no man's land, doing who-knows-what, and definitely not
-    responding to signals.
-    However, the APIs are there and they work, so they *can* be used to
-    make threads.
-- No fork handling
-    Seems borked for unknown reasons.
-
-## `0006-Add-serenity-to-the-configure-list-of-pthread-unixes.patch`
-
-Add serenity to the configure list of pthread unixes
-
+```
+0x00000015e4c9b017: [/usr/lib/libsystem.so] syscall1 +0x7 (syscall.cpp:20 => syscall.cpp:19)
+0x00000002018903eb: [/home/anon/gctest] GC_suspend_handler +0xab (pthread_stop_world.c:406 => pthread_stop_world.c:263)
+0x0000001eb725200d: ???
+0x000000050209d666: [/usr/lib/libc.so] sem_timedwait +0x86 (serenity.h:43 => semaphore.cpp:372)
+0x000000020188fb26: [/home/anon/gctest] GC_pthread_create +0x106 (pthread_support.c:2356)
+0x0000000201877d2e: [/home/anon/gctest] main +0x12e (test.c:2438)
+0x0000000201878064: [/home/anon/gctest] _entry +0x24 (crt0.cpp:47)
+```
 

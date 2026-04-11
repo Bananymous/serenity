@@ -200,7 +200,7 @@ size_t AnonymousVMObject::purge()
 
     m_was_purged = true;
 
-    remap_regions();
+    remap_regions_locked();
 
     return total_pages_purged;
 }
@@ -232,7 +232,7 @@ ErrorOr<void> AnonymousVMObject::set_volatile(bool is_volatile, bool& was_purged
         m_volatile = true;
         m_was_purged = false;
 
-        remap_regions();
+        remap_regions_locked();
         return {};
     }
     // When a VMObject is made non-volatile, we try to commit however many pages are not currently available.
@@ -258,7 +258,7 @@ ErrorOr<void> AnonymousVMObject::set_volatile(bool is_volatile, bool& was_purged
 
     m_volatile = false;
     m_was_purged = false;
-    remap_regions();
+    remap_regions_locked();
     return {};
 }
 
@@ -320,7 +320,7 @@ size_t AnonymousVMObject::cow_pages() const
 
 PageFaultResponse AnonymousVMObject::handle_cow_fault(size_t page_index, VirtualAddress vaddr)
 {
-    SpinlockLocker lock(m_lock);
+    VERIFY(m_lock.is_locked());
 
     if (is_volatile()) {
         // A COW fault in a volatile region? Userspace is writing to volatile memory, this is a bug. Crash.

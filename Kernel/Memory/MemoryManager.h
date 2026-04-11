@@ -48,14 +48,14 @@ enum class UsedMemoryRangeType {
     __Count,
 };
 
-static constexpr StringView UserMemoryRangeTypeNames[] {
+static constexpr StringView used_memory_range_type_names[] {
     "Low memory"sv,
     "Kernel"sv,
     "Boot module"sv,
     "Physical Pages"sv,
     "SMBIOS"sv,
 };
-static_assert(array_size(UserMemoryRangeTypeNames) == to_underlying(UsedMemoryRangeType::__Count));
+static_assert(array_size(used_memory_range_type_names) == to_underlying(UsedMemoryRangeType::__Count));
 
 struct UsedMemoryRange {
     UsedMemoryRangeType type {};
@@ -166,7 +166,7 @@ public:
     void uncommit_physical_pages(Badge<CommittedPhysicalPageSet>, size_t page_count);
 
     NonnullRefPtr<PhysicalRAMPage> allocate_committed_physical_page(Badge<CommittedPhysicalPageSet>, ShouldZeroFill = ShouldZeroFill::Yes);
-    ErrorOr<NonnullRefPtr<PhysicalRAMPage>> allocate_physical_page(ShouldZeroFill = ShouldZeroFill::Yes, bool* did_purge = nullptr);
+    ErrorOr<NonnullRefPtr<PhysicalRAMPage>> allocate_physical_page(ShouldZeroFill = ShouldZeroFill::Yes, bool* did_purge = nullptr, MemoryType memory_type_for_zero_fill = MemoryType::Normal);
     ErrorOr<Vector<NonnullRefPtr<PhysicalRAMPage>>> allocate_contiguous_physical_pages(size_t size, MemoryType memory_type_for_zero_fill);
     void deallocate_physical_page(PhysicalAddress);
 
@@ -222,14 +222,6 @@ public:
 
     PageDirectory& kernel_page_directory() { return *m_kernel_page_directory; }
 
-    template<typename Callback>
-    void for_each_used_memory_range(Callback callback)
-    {
-        m_global_data.with([&](auto& global_data) {
-            for (auto& range : global_data.used_memory_ranges)
-                callback(range);
-        });
-    }
     bool is_allowed_to_read_physical_memory_for_userspace(PhysicalAddress, size_t read_length) const;
 
     PhysicalPageEntry& get_physical_page_entry(PhysicalAddress);
@@ -258,8 +250,8 @@ private:
         Vector<ContiguousReservedMemoryRange> reserved_memory_ranges;
     };
 
-    void initialize_physical_pages();
-    void register_reserved_ranges();
+    void initialize_physical_pages(GlobalData& global_data);
+    void register_reserved_ranges(GlobalData& global_data);
 
 #ifdef HAS_ADDRESS_SANITIZER
     void initialize_kasan_shadow_memory();
@@ -275,13 +267,13 @@ private:
     static void flush_tlb_local(VirtualAddress, size_t page_count = 1);
     static void flush_tlb(PageDirectory const*, VirtualAddress, size_t page_count = 1);
 
-    RefPtr<PhysicalRAMPage> find_free_physical_page(bool);
+    RefPtr<PhysicalRAMPage> find_free_physical_page(bool, GlobalData&);
 
-    ALWAYS_INLINE u8* quickmap_page(PhysicalRAMPage& page)
+    ALWAYS_INLINE u8* quickmap_page(PhysicalRAMPage& page, MemoryType memory_type = Memory::MemoryType::Normal)
     {
-        return quickmap_page(page.paddr());
+        return quickmap_page(page.paddr(), memory_type);
     }
-    u8* quickmap_page(PhysicalAddress const&);
+    u8* quickmap_page(PhysicalAddress, MemoryType = Memory::MemoryType::Normal);
     void unquickmap_page();
 
     PageDirectoryEntry* quickmap_pd(PageDirectory&, size_t pdpt_index);

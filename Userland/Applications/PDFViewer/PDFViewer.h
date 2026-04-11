@@ -63,7 +63,7 @@ public:
 
     PageViewMode page_view_mode() const { return m_page_view_mode; }
     void set_page_view_mode(PageViewMode);
-    bool show_rendering_diagnostics() const { return m_rendering_preferences.show_diagnostics; }
+    bool show_rendering_diagnostics() const { return m_show_rendering_diagnostics; }
     void set_show_rendering_diagnostics(bool);
     bool show_clipping_paths() const { return m_rendering_preferences.show_clipping_paths; }
     void set_show_clipping_paths(bool);
@@ -71,12 +71,10 @@ public:
     void set_show_images(bool);
     bool show_hidden_text() const { return m_rendering_preferences.show_hidden_text; }
     void set_show_hidden_text(bool);
-    bool clip_images() const { return m_rendering_preferences.clip_images; }
-    void set_clip_images(bool);
-    bool clip_paths() const { return m_rendering_preferences.clip_paths; }
-    void set_clip_paths(bool);
-    bool clip_text() const { return m_rendering_preferences.clip_text; }
-    void set_clip_text(bool);
+    bool apply_clip() const { return m_rendering_preferences.apply_clip; }
+    void set_apply_clip(bool);
+    bool use_constant_alpha() const { return m_rendering_preferences.use_constant_alpha; }
+    void set_use_constant_alpha(bool);
 
 protected:
     PDFViewer();
@@ -107,6 +105,7 @@ private:
     PageDimensionCache m_page_dimension_cache;
     PageViewMode m_page_view_mode;
     PDF::RenderingPreferences m_rendering_preferences;
+    bool m_show_rendering_diagnostics { false };
 
     Gfx::IntPoint m_pan_starting_position;
     int m_rotations { 0 };

@@ -41,7 +41,7 @@ namespace Kernel {
 
 class Timer;
 
-enum class DispatchSignalResult {
+enum class [[nodiscard]] DispatchSignalResult {
     Deferred = 0,
     Yield,
     Terminate,
@@ -100,7 +100,7 @@ public:
     NO_SANITIZE_COVERAGE Process const& process() const { return m_process; }
 
     using Name = FixedStringBuffer<64>;
-    SpinlockProtected<Name, LockRank::None> const& name() const
+    RecursiveSpinlockProtected<Name, LockRank::None> const& name() const
     {
         return m_name;
     }
@@ -326,7 +326,7 @@ public:
             SpinlockLocker lock(m_lock);
             if (!should_add_blocker(blocker, data))
                 return false;
-            m_blockers.append({ &blocker, data });
+            m_blockers.try_append({ &blocker, data }).release_value_but_fixme_should_propagate_errors();
             return true;
         }
 
@@ -394,9 +394,9 @@ public:
             VERIFY(move_count > 0);
 
             Vector<BlockerInfo, 4> taken_blockers;
-            taken_blockers.ensure_capacity(move_count);
+            taken_blockers.try_ensure_capacity(move_count).release_value_but_fixme_should_propagate_errors();
             for (size_t i = 0; i < move_count; i++)
-                taken_blockers.append(m_blockers.take(i));
+                taken_blockers.unchecked_append(m_blockers.take(i));
             m_blockers.remove(0, move_count);
             return taken_blockers;
         }
@@ -409,9 +409,9 @@ public:
                 m_blockers = move(blockers_to_append);
                 return;
             }
-            m_blockers.ensure_capacity(m_blockers.size() + blockers_to_append.size());
+            m_blockers.try_ensure_capacity(m_blockers.size() + blockers_to_append.size()).release_value_but_fixme_should_propagate_errors();
             for (size_t i = 0; i < blockers_to_append.size(); i++)
-                m_blockers.append(blockers_to_append.take(i));
+                m_blockers.unchecked_append(blockers_to_append.take(i));
             blockers_to_append.clear();
         }
 
@@ -442,10 +442,10 @@ public:
         bool m_did_unblock { false };
     };
 
-    class WaitQueueBlocker final : public Blocker {
+    class DeprecatedWaitQueueBlocker final : public Blocker {
     public:
-        explicit WaitQueueBlocker(WaitQueue&, StringView block_reason = {});
-        virtual ~WaitQueueBlocker();
+        explicit DeprecatedWaitQueueBlocker(DeprecatedWaitQueue&, StringView block_reason = {});
+        virtual ~DeprecatedWaitQueueBlocker();
 
         virtual Type blocker_type() const override { return Type::Queue; }
         virtual StringView state_string() const override { return m_block_reason.is_null() ? m_block_reason : "Queue"sv; }
@@ -455,7 +455,7 @@ public:
         bool unblock();
 
     protected:
-        WaitQueue& m_wait_queue;
+        DeprecatedWaitQueue& m_wait_queue;
         StringView m_block_reason;
         bool m_did_unblock { false };
     };
@@ -669,7 +669,6 @@ public:
         ErrorOr<siginfo_t>& m_result;
         Variant<Empty, NonnullRefPtr<Process>, NonnullRefPtr<ProcessGroup>> const m_waitee;
         bool m_did_unblock { false };
-        bool m_got_sigchild { false };
     };
 
     class WaitBlockerSet final : public BlockerSet {
@@ -788,6 +787,7 @@ public:
     ThreadRegisters const& regs() const { return m_regs; }
 
     State state() const { return m_state; }
+    static StringView state_string(State);
     StringView state_string() const;
 
     ArchSpecificThreadData& arch_specific_data() { return m_arch_specific_data; }
@@ -825,10 +825,10 @@ public:
     void unblock(u8 signal = 0);
 
     template<class... Args>
-    Thread::BlockResult wait_on(WaitQueue& wait_queue, Thread::BlockTimeout const& timeout, Args&&... args)
+    Thread::BlockResult wait_on(DeprecatedWaitQueue& wait_queue, Thread::BlockTimeout const& timeout, Args&&... args)
     {
         VERIFY(this == Thread::current());
-        return block<Thread::WaitQueueBlocker>(timeout, wait_queue, forward<Args>(args)...);
+        return block<Thread::DeprecatedWaitQueueBlocker>(timeout, wait_queue, forward<Args>(args)...);
     }
 
     BlockResult sleep(clockid_t, Duration const&, Duration* = nullptr);
@@ -877,7 +877,6 @@ public:
     void set_dump_backtrace_on_finalization() { m_dump_backtrace_on_finalization = true; }
 
     DispatchSignalResult dispatch_one_pending_signal();
-    DispatchSignalResult try_dispatch_one_pending_signal(u8 signal);
     DispatchSignalResult dispatch_signal(u8 signal);
     void check_dispatch_pending_signal();
     [[nodiscard]] bool has_unmasked_pending_signals() const { return m_have_any_unmasked_pending_signals.load(AK::memory_order_consume); }
@@ -888,6 +887,9 @@ public:
     u32 pending_signals_for_state() const;
 
     [[nodiscard]] bool is_in_alternative_signal_stack() const;
+
+    [[nodiscard]] bool was_interrupted() const { return m_was_interrupted; }
+    void clear_interrupted() { m_was_interrupted = false; }
 
     FPUState& fpu_state() { return m_fpu_state; }
 
@@ -1014,7 +1016,7 @@ public:
                 }
             }
             if (!have_existing)
-                m_holding_locks_list.append({ &lock, location, 1 });
+                m_holding_locks_list.try_append({ &lock, location, 1 }).release_value_but_fixme_should_propagate_errors();
         } else {
             VERIFY(refs_delta < 0);
             bool found = false;
@@ -1095,7 +1097,7 @@ private:
     IntrusiveListNode<Thread> m_process_thread_list_node;
     int m_runnable_priority { -1 };
 
-    friend class WaitQueue;
+    friend class DeprecatedWaitQueue;
 
     class JoinBlockerSet final : public BlockerSet {
     public:
@@ -1224,10 +1226,8 @@ private:
 
     FPUState m_fpu_state {};
     State m_state { Thread::State::Invalid };
-    SpinlockProtected<Name, LockRank::None> m_name;
+    RecursiveSpinlockProtected<Name, LockRank::None> m_name;
     u32 m_priority { THREAD_PRIORITY_NORMAL };
-
-    State m_stop_state { Thread::State::Invalid };
 
     bool m_dump_backtrace_on_finalization { false };
     bool m_should_die { false };
@@ -1236,6 +1236,7 @@ private:
     bool m_is_crashing { false };
     bool m_is_promise_violation_pending { false };
     Atomic<bool> m_have_any_unmasked_pending_signals { false };
+    Atomic<bool> m_was_interrupted { false };
     Atomic<u32> m_nested_profiler_calls { 0 };
 
     NonnullRefPtr<Timer> const m_block_timer;
@@ -1258,7 +1259,7 @@ public:
     using ListInProcess = IntrusiveList<&Thread::m_process_thread_list_node>;
     using GlobalList = IntrusiveList<&Thread::m_global_thread_list_node>;
 
-    static SpinlockProtected<GlobalList, LockRank::None>& all_instances();
+    static RecursiveSpinlockProtected<GlobalList, LockRank::None>& all_instances();
 
 #ifdef ENABLE_KERNEL_COVERAGE_COLLECTION
     // Used by __sanitizer_cov_trace_pc to identify traced threads.

@@ -18,7 +18,7 @@ class Console
     friend VirtIO::ConsolePort;
 
 public:
-    static NonnullLockRefPtr<Console> must_create_for_pci_instance(PCI::DeviceIdentifier const&);
+    static ErrorOr<NonnullRefPtr<Console>> create_for_pci_instance(PCI::DeviceIdentifier const&);
     virtual ~Console() override = default;
 
     unsigned device_id() const
@@ -73,7 +73,7 @@ private:
     OwnPtr<Memory::RingBuffer> m_control_transmit_buffer;
     OwnPtr<Memory::RingBuffer> m_control_receive_buffer;
 
-    WaitQueue m_control_wait_queue;
+    DeprecatedWaitQueue m_control_wait_queue;
 
     static unsigned next_device_id;
 };

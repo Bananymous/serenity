@@ -78,8 +78,10 @@ set(CMD_SOURCES_CPP
     imgcmp.cpp
     ini.cpp
     init.cpp
+    inputdbg.cpp
     install.cpp
     isobmff.cpp
+    jbig2-from-json.cpp
     js.cpp
     json.cpp
     kcov-example.cpp
@@ -334,8 +336,10 @@ target_link_libraries(image PRIVATE LibGfx)
 target_link_libraries(image2bin PRIVATE LibGfx)
 target_link_libraries(imgcmp PRIVATE LibGfx)
 target_link_libraries(ini PRIVATE LibFileSystem)
+target_link_libraries(inputdbg PRIVATE LibGUI)
 target_link_libraries(install-bin PRIVATE LibFileSystem)
 target_link_libraries(isobmff PRIVATE LibGfx)
+target_link_libraries(jbig2-from-json PRIVATE LibGfx)
 target_link_libraries(js PRIVATE LibCrypto LibJS LibLine LibLocale LibTextCodec)
 target_link_libraries(keymap PRIVATE LibKeyboard)
 target_link_libraries(less PRIVATE LibLine)
@@ -397,6 +401,11 @@ target_link_libraries(zip PRIVATE LibArchive LibFileSystem)
 
 # FIXME: Link this file into headless-browser without compiling it again.
 target_sources(headless-browser PRIVATE "${SerenityOS_SOURCE_DIR}/Userland/Services/WebContent/WebDriverConnection.cpp")
+
+# Required for conditionally creating hardcoded /dev/kcov entry
+if (ENABLE_KERNEL_COVERAGE_COLLECTION)
+    target_compile_definitions(init PRIVATE ENABLE_KERNEL_COVERAGE_COLLECTION)
+endif()
 
 include("${SerenityOS_SOURCE_DIR}/Meta/Lagom/Fuzzers/fuzzers.cmake")
 

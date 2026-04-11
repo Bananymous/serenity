@@ -10,6 +10,7 @@
 #include <AK/HashMap.h>
 #include <AK/OwnPtr.h>
 #include <AK/Types.h>
+#include <Kernel/Arch/MemoryFences.h>
 #include <Kernel/Bus/PCI/Device.h>
 #include <Kernel/Devices/Storage/NVMe/NVMeDefinitions.h>
 #include <Kernel/Interrupts/IRQHandler.h>
@@ -18,6 +19,7 @@
 #include <Kernel/Locking/Spinlock.h>
 #include <Kernel/Memory/MemoryManager.h>
 #include <Kernel/Memory/TypedMapping.h>
+#include <Kernel/Tasks/DeprecatedWaitQueue.h>
 
 namespace Kernel {
 
@@ -69,7 +71,7 @@ protected:
         u32 const old = *dbbuf;
 
         *dbbuf = new_value;
-        AK::full_memory_barrier();
+        full_memory_fence();
 
         bool need_mmio = static_cast<u16>(new_value - *ei - 1) < static_cast<u16>(new_value - old);
         return need_mmio;
@@ -77,7 +79,7 @@ protected:
 
     void update_sq_doorbell()
     {
-        full_memory_barrier();
+        full_memory_fence();
         if (m_db_regs.dbbuf_shadow.paddr.is_null()
             || update_shadow_buf(m_sq_tail, &m_db_regs.dbbuf_shadow->sq_tail, &m_db_regs.dbbuf_eventidx->sq_tail))
             m_db_regs.mmio_reg->sq_tail = m_sq_tail;
@@ -101,11 +103,12 @@ protected:
     virtual void complete_current_request(u16 cmdid, u16 status);
 
 private:
+    void complete_current_request_impl(u16 cmdid, u16 status, HashMap<u16, NVMeIO>& requests);
     bool cqe_available();
     void update_cqe_head();
     void update_cq_doorbell()
     {
-        full_memory_barrier();
+        full_memory_fence();
         if (m_db_regs.dbbuf_shadow.paddr.is_null()
             || update_shadow_buf(m_cq_head, &m_db_regs.dbbuf_shadow->cq_head, &m_db_regs.dbbuf_eventidx->cq_head))
             m_db_regs.mmio_reg->cq_head = m_cq_head;
@@ -128,7 +131,7 @@ private:
     Span<NVMeSubmission> m_sqe_array;
     OwnPtr<Memory::Region> m_sq_dma_region;
     Span<NVMeCompletion> m_cqe_array;
-    WaitQueue m_sync_wait_queue;
+    DeprecatedWaitQueue m_sync_wait_queue;
     Doorbell m_db_regs;
     NonnullRefPtr<Memory::PhysicalRAMPage const> const m_rw_dma_page;
 };

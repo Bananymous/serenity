@@ -15,19 +15,30 @@
 #include <LibGfx/ImageFormats/ExifOrientedBitmap.h>
 #include <LibGfx/ImageFormats/ISOBMFF/JPEGXLBoxes.h>
 #include <LibGfx/ImageFormats/ISOBMFF/Reader.h>
-#include <LibGfx/ImageFormats/JPEGXLChannel.h>
-#include <LibGfx/ImageFormats/JPEGXLCommon.h>
-#include <LibGfx/ImageFormats/JPEGXLEntropyDecoder.h>
+#include <LibGfx/ImageFormats/JPEGXL/Channel.h>
+#include <LibGfx/ImageFormats/JPEGXL/Common.h>
+#include <LibGfx/ImageFormats/JPEGXL/DCTNaturalOrder.h>
+#include <LibGfx/ImageFormats/JPEGXL/EntropyDecoder.h>
+#include <LibGfx/ImageFormats/JPEGXL/ModularTransforms.h>
+#include <LibGfx/ImageFormats/JPEGXL/SelfCorrectingPredictor.h>
 #include <LibGfx/ImageFormats/JPEGXLLoader.h>
+#include <LibGfx/Matrix3x3.h>
 
-namespace Gfx {
+namespace Gfx::JPEGXL {
 
 // This is not specified
+static ErrorOr<void> read_non_aligned(LittleEndianInputBitStream& stream, Bytes bytes)
+{
+    for (u8& byte : bytes)
+        byte = TRY(stream.read_bits(8));
+    return {};
+}
+
 static ErrorOr<String> read_string(LittleEndianInputBitStream& stream)
 {
     auto const name_length = U32(0, TRY(stream.read_bits(4)), 16 + TRY(stream.read_bits(5)), 48 + TRY(stream.read_bits(10)));
     auto string_buffer = TRY(FixedArray<u8>::create(name_length));
-    TRY(stream.read_until_filled(string_buffer));
+    TRY(read_non_aligned(stream, string_buffer));
     return String::from_utf8(StringView { string_buffer });
 }
 
@@ -360,18 +371,22 @@ static ErrorOr<ExtraChannelInfo> read_extra_channel_info(LittleEndianInputBitStr
             extra_channel_info.alpha_associated = TRY(stream.read_bit());
     }
 
-    if (extra_channel_info.type != ExtraChannelInfo::ExtraChannelType::kAlpha) {
-        TODO();
+    if (extra_channel_info.type == ExtraChannelInfo::ExtraChannelType::kSpotColour) {
+        return Error::from_string_literal("JPEGXLLoader: Read extra channel info for SpotColour");
+    }
+
+    if (extra_channel_info.type == ExtraChannelInfo::ExtraChannelType::kCFA) {
+        return Error::from_string_literal("JPEGXLLoader: Read extra channel info for CFA");
     }
 
     return extra_channel_info;
 }
 
 struct ToneMapping {
-    float intensity_target { 255 };
-    float min_nits { 0 };
+    f32 intensity_target { 255 };
+    f32 min_nits { 0 };
     bool relative_to_max_display { false };
-    float linear_below { 0 };
+    f32 linear_below { 0 };
 };
 
 static ErrorOr<ToneMapping> read_tone_mapping(LittleEndianInputBitStream& stream)
@@ -380,18 +395,61 @@ static ErrorOr<ToneMapping> read_tone_mapping(LittleEndianInputBitStream& stream
     bool const all_default = TRY(stream.read_bit());
 
     if (!all_default) {
-        TODO();
+        tone_mapping.intensity_target = TRY(F16(stream));
+        tone_mapping.min_nits = TRY(F16(stream));
+        tone_mapping.relative_to_max_display = TRY(stream.read_bit());
+        tone_mapping.linear_below = TRY(F16(stream));
     }
 
     return tone_mapping;
 }
 
+// L.2.1 - OpsinInverseMatrix
 struct OpsinInverseMatrix {
+    f32 inv_mat00 = 11.031566901960783;
+    f32 inv_mat01 = -9.866943921568629;
+    f32 inv_mat02 = -0.16462299647058826;
+    f32 inv_mat10 = -3.254147380392157;
+    f32 inv_mat11 = 4.418770392156863;
+    f32 inv_mat12 = -0.16462299647058826;
+    f32 inv_mat20 = -3.6588512862745097;
+    f32 inv_mat21 = 2.7129230470588235;
+    f32 inv_mat22 = 1.9459282392156863;
+    f32 opsin_bias0 = -0.0037930732552754493;
+    f32 opsin_bias1 = -0.0037930732552754493;
+    f32 opsin_bias2 = -0.0037930732552754493;
+    f32 quant_bias0 = 1 - 0.05465007330715401;
+    f32 quant_bias1 = 1 - 0.07005449891748593;
+    f32 quant_bias2 = 1 - 0.049935103337343655;
+    f32 quant_bias_numerator = 0.145;
 };
 
-static ErrorOr<OpsinInverseMatrix> read_opsin_inverse_matrix(LittleEndianInputBitStream&)
+static ErrorOr<OpsinInverseMatrix> read_opsin_inverse_matrix(LittleEndianInputBitStream& stream)
 {
-    TODO();
+    OpsinInverseMatrix matrix;
+
+    bool all_default = TRY(stream.read_bit());
+
+    if (!all_default) {
+        matrix.inv_mat00 = TRY(F16(stream));
+        matrix.inv_mat01 = TRY(F16(stream));
+        matrix.inv_mat02 = TRY(F16(stream));
+        matrix.inv_mat10 = TRY(F16(stream));
+        matrix.inv_mat11 = TRY(F16(stream));
+        matrix.inv_mat12 = TRY(F16(stream));
+        matrix.inv_mat20 = TRY(F16(stream));
+        matrix.inv_mat21 = TRY(F16(stream));
+        matrix.inv_mat22 = TRY(F16(stream));
+        matrix.opsin_bias0 = TRY(F16(stream));
+        matrix.opsin_bias1 = TRY(F16(stream));
+        matrix.opsin_bias2 = TRY(F16(stream));
+        matrix.quant_bias0 = TRY(F16(stream));
+        matrix.quant_bias1 = TRY(F16(stream));
+        matrix.quant_bias2 = TRY(F16(stream));
+        matrix.quant_bias_numerator = TRY(F16(stream));
+    }
+
+    return matrix;
 }
 
 struct ImageMetadata {
@@ -427,16 +485,38 @@ struct ImageMetadata {
         return number_of_color_channels() + num_extra_channels;
     }
 
+    Optional<u16> black_channel() const
+    {
+        return first_extra_channel_matching([](auto& info) { return info.type == ExtraChannelInfo::ExtraChannelType::kBlack; });
+    }
+
     Optional<u16> alpha_channel() const
     {
+        return first_extra_channel_matching([](auto& info) { return info.type == ExtraChannelInfo::ExtraChannelType::kAlpha; });
+    }
+
+private:
+    Optional<u16> first_extra_channel_matching(auto&& condition) const
+    {
         for (u16 i = 0; i < ec_info.size(); ++i) {
-            if (ec_info[i].type == ExtraChannelInfo::ExtraChannelType::kAlpha)
+            if (condition(ec_info[i]))
                 return i + number_of_color_channels();
         }
-
         return OptionalNone {};
     }
 };
+
+static ErrorOr<void> ensure_metadata_correctness(ImageMetadata const& metadata)
+{
+    // "This includes CMYK colour spaces; in that case, the RGB components are interpreted as
+    // CMY where 0 means full ink, want_icc is true (see Table E.1), and there is an extra channel
+    // of type kBlack (see Table D.9)."
+    bool should_be_cmyk = any_of(metadata.ec_info, [](auto& info) { return info.type == ExtraChannelInfo::ExtraChannelType::kBlack; });
+    if (should_be_cmyk && !metadata.colour_encoding.want_icc)
+        return Error::from_string_literal("JPEGXLLoader: Seemingly CMYK image doesn't have an ICC profile");
+
+    return {};
+}
 
 static ErrorOr<ImageMetadata> read_metadata_header(LittleEndianInputBitStream& stream)
 {
@@ -490,19 +570,51 @@ static ErrorOr<ImageMetadata> read_metadata_header(LittleEndianInputBitStream& s
     if (metadata.cw_mask != 0)
         TODO();
 
+    TRY(ensure_metadata_correctness(metadata));
+
     return metadata;
 }
 ///
 
 /// Table F.7 — BlendingInfo bundle
 struct BlendingInfo {
-    enum class BlendMode {
+    enum class SimpleBlendMode : u8 {
         kReplace = 0,
         kAdd = 1,
         kBlend = 2,
         kMulAdd = 3,
         kMul = 4,
     };
+
+    // This is a superset of `BlendingInfo::SimpleBlendMode` and defined in `Table K.1 — PatchBlendMode.
+    // It is only used for patches, but having it here allows us to share some code.
+    enum class BlendMode : u8 {
+        kNone = 0,
+        kReplace = 1,
+        kAdd = 2,
+        kMul = 3,
+        kBlendAbove = 4,
+        kBlendBelow = 5,
+        kMulAddAbove = 6,
+        kMulAddBelow = 7,
+    };
+
+    static BlendMode to_general_blend_mode(SimpleBlendMode simple)
+    {
+        switch (simple) {
+        case SimpleBlendMode::kReplace:
+            return BlendMode::kReplace;
+        case SimpleBlendMode::kAdd:
+            return BlendMode::kAdd;
+        case SimpleBlendMode::kBlend:
+            return BlendMode::kBlendAbove;
+        case SimpleBlendMode::kMulAdd:
+            return BlendMode::kMulAddAbove;
+        case SimpleBlendMode::kMul:
+            return BlendMode::kMul;
+        }
+        VERIFY_NOT_REACHED();
+    }
 
     BlendMode mode {};
     u8 alpha_channel {};
@@ -514,13 +626,14 @@ static ErrorOr<BlendingInfo> read_blending_info(LittleEndianInputBitStream& stre
 {
     BlendingInfo blending_info;
 
-    blending_info.mode = static_cast<BlendingInfo::BlendMode>(U32(0, 1, 2, 3 + TRY(stream.read_bits(2))));
+    auto simple = static_cast<BlendingInfo::SimpleBlendMode>(U32(0, 1, 2, 3 + TRY(stream.read_bits(2))));
+    blending_info.mode = BlendingInfo::to_general_blend_mode(simple);
 
     bool const extra = metadata.num_extra_channels > 0;
 
     if (extra) {
-        auto const blend_or_mul_add = blending_info.mode == BlendingInfo::BlendMode::kBlend
-            || blending_info.mode == BlendingInfo::BlendMode::kMulAdd;
+        auto const blend_or_mul_add = blending_info.mode == BlendingInfo::BlendMode::kBlendAbove
+            || blending_info.mode == BlendingInfo::BlendMode::kMulAddAbove;
 
         if (blend_or_mul_add)
             blending_info.alpha_channel = U32(0, 1, 2, 3 + TRY(stream.read_bits(3)));
@@ -744,7 +857,7 @@ static ErrorOr<FrameHeader> read_frame_header(LittleEndianInputBitStream& stream
             frame_header.passes = TRY(read_passes(stream));
 
         if (frame_header.frame_type == FrameHeader::FrameType::kLFFrame)
-            TODO();
+            frame_header.lf_level = 1 + TRY(stream.read_bits(2));
 
         if (frame_header.frame_type != FrameHeader::FrameType::kLFFrame)
             frame_header.have_crop = TRY(stream.read_bit());
@@ -825,6 +938,57 @@ static u64 num_toc_entries(FrameHeader const& frame_header, u64 num_groups, u64 
     return 1 + num_lf_groups + 1 + num_groups * frame_header.passes.num_passes;
 }
 
+// F.3.2 - Decoding permutations
+static ErrorOr<Vector<u32>> decode_permutations(LittleEndianInputBitStream& stream, EntropyDecoder& decoder, u32 size, u32 skip)
+{
+    // "Let GetContext(x) denote min(7, ceil(log2(x + 1)))."
+    auto get_context = [](u32 x) -> u32 {
+        return min(7, ceil(log2(x + 1)));
+    };
+
+    // "The decoder first decodes an integer end, as specified in C.3.3,
+    // using DecodeHybridVarLenUint(GetContext(size))."
+    auto end = TRY(decoder.decode_hybrid_uint(stream, get_context(size)));
+
+    // "The value end is at most size − skip."
+    if (end > size - skip)
+        return Error::from_string_literal("JPEGXLLoader: Invalid value for end when decoding permutations");
+
+    // "Then a sequence lehmer of size elements is produced as follows. It is zero-initialized."
+    auto lehmer = TRY(FixedArray<u32>::create(size));
+
+    // "For each index i in range [skip, skip + end), the value lehmer[i] is set to
+    // DecodeHybridVarLenUint(GetContext(i > skip ? lehmer[i − 1] : 0));"
+    for (u32 i = skip; i < skip + end; ++i) {
+        lehmer[i] = TRY(decoder.decode_hybrid_uint(stream, get_context(i > skip ? lehmer[i - 1] : 0)));
+        // "this value is strictly less than size − i."
+        if (lehmer[i] >= size - i)
+            return Error::from_string_literal("JPEGXLLoader: Decoded permutation is invalid");
+    }
+
+    // "The decoder then maintains a sequence of elements temp, initially containing
+    // the numbers [0, size) in increasing order,"
+    Vector<u32> temp;
+    TRY(temp.try_ensure_capacity(size));
+    for (u32 i = 0; i < size; ++i)
+        temp.append(i);
+
+    // "and a sequence of elements permutation, initially empty."
+    Vector<u32> permutation;
+    TRY(permutation.try_ensure_capacity(size));
+
+    // "Then, for each integer i in the range [0, size), the decoder appends to
+    // permutation element temp[lehmer[i]], then removes it from temp, leaving the
+    // relative order of other elements unchanged."
+    for (u32 i = 0; i < size; ++i) {
+        permutation.append(temp[lehmer[i]]);
+        temp.remove(lehmer[i]);
+    }
+
+    // " Finally, permutation is the decoded permutation."
+    return permutation;
+}
+
 static ErrorOr<TOC> read_toc(LittleEndianInputBitStream& stream, FrameHeader const& frame_header, u64 num_groups, u64 num_lf_groups)
 {
     TOC toc;
@@ -869,9 +1033,9 @@ static ErrorOr<TOC> read_toc(LittleEndianInputBitStream& stream, FrameHeader con
 
 /// G.1.2 - LF channel dequantization weights
 struct LfChannelDequantization {
-    float m_x_lf_unscaled { 4096 };
-    float m_y_lf_unscaled { 512 };
-    float m_b_lf_unscaled { 256 };
+    f32 m_x_lf_unscaled { 1. / (32 * 128) };
+    f32 m_y_lf_unscaled { 1. / (4 * 128) };
+    f32 m_b_lf_unscaled { 1. / (2 * 128) };
 };
 
 static ErrorOr<LfChannelDequantization> read_lf_channel_dequantization(LittleEndianInputBitStream& stream)
@@ -881,9 +1045,9 @@ static ErrorOr<LfChannelDequantization> read_lf_channel_dequantization(LittleEnd
     auto const all_default = TRY(stream.read_bit());
 
     if (!all_default) {
-        lf_channel_dequantization.m_x_lf_unscaled = TRY(F16(stream));
-        lf_channel_dequantization.m_y_lf_unscaled = TRY(F16(stream));
-        lf_channel_dequantization.m_b_lf_unscaled = TRY(F16(stream));
+        lf_channel_dequantization.m_x_lf_unscaled = TRY(F16(stream)) / 128;
+        lf_channel_dequantization.m_y_lf_unscaled = TRY(F16(stream)) / 128;
+        lf_channel_dequantization.m_b_lf_unscaled = TRY(F16(stream)) / 128;
     }
 
     return lf_channel_dequantization;
@@ -947,6 +1111,8 @@ public:
         auto const num_pre_clustered_distributions = (tree.m_tree.size() + 1) / 2;
         decoder = TRY(EntropyDecoder::create(stream, num_pre_clustered_distributions));
 
+        tree.save_self_correction_usage();
+
         return tree;
     }
 
@@ -972,7 +1138,29 @@ public:
         }
     }
 
+    bool use_self_correcting_predictor() const
+    {
+        return m_use_self_correcting_predictor;
+    }
+
 private:
+    void save_self_correction_usage()
+    {
+        for (auto const& node : m_tree) {
+            // We are looking for usage of the Self Correction predictor, so this includes both the
+            // 'max_error' property and the 'Self-correcting' predictor, They are given as index 15
+            // in Table H.4 — Property definitions and index 6 in Table H.3 — Modular predictors respectively.
+            auto const use_max_error = node.has<DecisionNode>() && node.get<DecisionNode>().property == 15;
+            auto const use_self_correcting = node.has<LeafNode>() && node.get<LeafNode>().predictor == 6;
+            if (use_max_error || use_self_correcting) {
+                m_use_self_correcting_predictor = true;
+                return;
+            }
+        }
+
+        m_use_self_correcting_predictor = false;
+    }
+
     struct DecisionNode {
         u64 property {};
         i64 value {};
@@ -981,128 +1169,102 @@ private:
     };
 
     Vector<Variant<DecisionNode, LeafNode>> m_tree;
+
+    bool m_use_self_correcting_predictor { true };
 };
-///
-
-/// H.5 - Self-correcting predictor
-struct WPHeader {
-    u8 wp_p1 { 16 };
-    u8 wp_p2 { 10 };
-    u8 wp_p3a { 7 };
-    u8 wp_p3b { 7 };
-    u8 wp_p3c { 7 };
-    u8 wp_p3d { 0 };
-    u8 wp_p3e { 0 };
-    Array<u8, 4> wp_w { 13, 12, 12, 12 };
-};
-
-static ErrorOr<WPHeader> read_self_correcting_predictor(LittleEndianInputBitStream& stream)
-{
-    WPHeader self_correcting_predictor {};
-
-    bool const default_wp = TRY(stream.read_bit());
-
-    if (!default_wp) {
-        self_correcting_predictor.wp_p1 = TRY(stream.read_bits(5));
-        self_correcting_predictor.wp_p2 = TRY(stream.read_bits(5));
-        self_correcting_predictor.wp_p3a = TRY(stream.read_bits(5));
-        self_correcting_predictor.wp_p3b = TRY(stream.read_bits(5));
-        self_correcting_predictor.wp_p3c = TRY(stream.read_bits(5));
-        self_correcting_predictor.wp_p3d = TRY(stream.read_bits(5));
-        self_correcting_predictor.wp_p3e = TRY(stream.read_bits(5));
-        self_correcting_predictor.wp_w = {
-            TRY(stream.read_bits<u8>(4)),
-            TRY(stream.read_bits<u8>(4)),
-            TRY(stream.read_bits<u8>(4)),
-            TRY(stream.read_bits<u8>(4)),
-        };
-    }
-
-    return self_correcting_predictor;
-}
-///
-
-/// H.6 - Transformations
-struct SqueezeParams {
-    bool horizontal {};
-    bool in_place {};
-    u32 begin_c {};
-    u32 num_c {};
-};
-
-static ErrorOr<SqueezeParams> read_squeeze_params(LittleEndianInputBitStream& stream)
-{
-    SqueezeParams squeeze_params;
-
-    squeeze_params.horizontal = TRY(stream.read_bit());
-    squeeze_params.in_place = TRY(stream.read_bit());
-    squeeze_params.begin_c = U32(TRY(stream.read_bits(3)), 8 + TRY(stream.read_bits(6)), 72 + TRY(stream.read_bits(10)), 1096 + TRY(stream.read_bits(13)));
-    squeeze_params.num_c = U32(1, 2, 3, 4 + TRY(stream.read_bits(4)));
-
-    return squeeze_params;
-}
-
-struct TransformInfo {
-    enum class TransformId {
-        kRCT = 0,
-        kPalette = 1,
-        kSqueeze = 2,
-    };
-
-    TransformId tr {};
-    u32 begin_c {};
-    u32 rct_type {};
-
-    u32 num_c {};
-    u32 nb_colours {};
-    u32 nb_deltas {};
-    u8 d_pred {};
-
-    Vector<SqueezeParams> sp {};
-};
-
-static ErrorOr<TransformInfo> read_transform_info(LittleEndianInputBitStream& stream)
-{
-    TransformInfo transform_info;
-
-    transform_info.tr = static_cast<TransformInfo::TransformId>(TRY(stream.read_bits(2)));
-
-    if (transform_info.tr != TransformInfo::TransformId::kSqueeze) {
-        transform_info.begin_c = U32(
-            TRY(stream.read_bits(3)),
-            8 + TRY(stream.read_bits(3)),
-            72 + TRY(stream.read_bits(10)),
-            1096 + TRY(stream.read_bits(13)));
-    }
-
-    if (transform_info.tr == TransformInfo::TransformId::kRCT) {
-        transform_info.rct_type = U32(
-            6,
-            TRY(stream.read_bits(2)),
-            2 + TRY(stream.read_bits(4)),
-            10 + TRY(stream.read_bits(6)));
-    }
-
-    if (transform_info.tr == TransformInfo::TransformId::kPalette) {
-        transform_info.num_c = U32(1, 3, 4, 1 + TRY(stream.read_bits(13)));
-        transform_info.nb_colours = U32(TRY(stream.read_bits(8)), 256 + TRY(stream.read_bits(10)), 1280 + TRY(stream.read_bits(12)), 5376 + TRY(stream.read_bits(16)));
-        transform_info.nb_deltas = U32(0, 1 + TRY(stream.read_bits(8)), 257 + TRY(stream.read_bits(10)), 1281 + TRY(stream.read_bits(16)));
-        transform_info.d_pred = TRY(stream.read_bits(4));
-    }
-
-    if (transform_info.tr == TransformInfo::TransformId::kSqueeze) {
-        auto const num_sq = U32(0, 1 + TRY(stream.read_bits(4)), 9 + TRY(stream.read_bits(6)), 41 + TRY(stream.read_bits(8)));
-        TRY(transform_info.sp.try_resize(num_sq));
-        for (u32 i = 0; i < num_sq; ++i)
-            transform_info.sp[i] = TRY(read_squeeze_params(stream));
-    }
-
-    return transform_info;
-}
 ///
 
 /// Local abstractions to store the decoded image
-class Image {
+class BlendedImage {
+public:
+    ErrorOr<void> blend_into(BlendedImage& image, BlendingInfo::BlendMode mode) const
+    {
+        if (to_underlying(mode) > 2)
+            return Error::from_string_literal("JPEGXLLoder: Unsupported blend mode");
+
+        auto input_rect = active_rectangle();
+        auto output_rect = image.active_rectangle();
+
+        if (input_rect.size() != output_rect.size())
+            return Error::from_string_literal("JPEGXLLoder: Unable to blend image with a different size");
+
+        for (u32 i = 0; i < channels().size(); ++i) {
+            auto const& input_channel = channels()[i];
+            auto& output_channel = image.channels()[i];
+
+            if (mode == BlendingInfo::BlendMode::kNone)
+                blend_channel<BlendingInfo::BlendMode::kNone>(input_channel, input_rect, output_channel, output_rect);
+            else if (mode == BlendingInfo::BlendMode::kReplace)
+                blend_channel<BlendingInfo::BlendMode::kReplace>(input_channel, input_rect, output_channel, output_rect);
+            else if (mode == BlendingInfo::BlendMode::kAdd)
+                blend_channel<BlendingInfo::BlendMode::kAdd>(input_channel, input_rect, output_channel, output_rect);
+        }
+
+        return {};
+    }
+
+protected:
+    virtual ~BlendedImage() = default;
+
+    virtual Vector<Channel>& channels() = 0;
+    virtual Vector<Channel> const& channels() const = 0;
+    virtual IntRect active_rectangle() const = 0;
+    IntSize size() const { return active_rectangle().size(); }
+
+private:
+    template<BlendingInfo::BlendMode blend_mode>
+    void blend_channel(Channel const& input_channel, IntRect input_rect,
+        Channel& output_channel, IntRect output_rect) const
+    {
+        for (u32 y = 0; y < static_cast<u32>(input_rect.height()); ++y) {
+            for (u32 x = 0; x < static_cast<u32>(input_rect.width()); ++x) {
+                auto const old_sample = output_channel.get(x + output_rect.x(), y + output_rect.y());
+                auto const new_sample = input_channel.get(x + input_rect.x(), y + input_rect.y());
+
+                auto const sample = [&]() {
+                    // Table F.8 — BlendMode (BlendingInfo.mode)
+                    if constexpr (blend_mode == BlendingInfo::BlendMode::kNone)
+                        return old_sample;
+                    if constexpr (blend_mode == BlendingInfo::BlendMode::kReplace)
+                        return new_sample;
+                    if constexpr (blend_mode == BlendingInfo::BlendMode::kAdd)
+                        return old_sample + new_sample;
+                }();
+                output_channel.set(x + output_rect.x(), y + output_rect.y(), sample);
+            }
+        }
+    }
+};
+
+class ImageView : public BlendedImage {
+public:
+    ImageView(Vector<Channel>& channels, IntRect active_rect)
+        : m_channels_view(channels)
+        , m_active_rect(active_rect)
+    {
+    }
+
+private:
+    virtual Vector<Channel> const& channels() const override
+    {
+        return m_channels_view;
+    }
+
+    virtual Vector<Channel>& channels() override
+    {
+        return m_channels_view;
+    }
+
+    virtual IntRect active_rectangle() const override
+    {
+        return m_active_rect;
+    }
+
+    Vector<Channel>& m_channels_view;
+    IntRect m_active_rect;
+};
+
+class Image : public BlendedImage {
 public:
     static ErrorOr<Image> create(IntSize size, ImageMetadata const& metadata)
     {
@@ -1136,35 +1298,40 @@ public:
         return Image { move(channels) };
     }
 
-    void blend_into(Image& image, FrameHeader const& frame_header) const
+    ErrorOr<ImageView> get_subimage(IntRect rectangle)
     {
-        // FIXME: We should use ec_blending_info when appropriate
+        if (rectangle.right() > size().width()
+            || rectangle.bottom() > size().height())
+            return Error::from_string_literal("JPEGXLLoader: Can't create subimage from out-of-bounds rectangle");
 
-        if (frame_header.blending_info.mode != BlendingInfo::BlendMode::kReplace)
-            TODO();
+        return ImageView { m_channels, rectangle };
+    }
 
-        for (u16 i = 0; i < m_channels.size(); ++i) {
-            auto const& input_channel = m_channels[i];
-            auto& output_channel = image.channels()[i];
+    ErrorOr<NonnullRefPtr<CMYKBitmap>> to_cmyk_bitmap(ImageMetadata const& metadata) const
+    {
+        auto const width = m_channels[0].width();
+        auto const height = m_channels[0].height();
 
-            for (u32 y = 0; y < input_channel.height(); ++y) {
-                auto const corrected_y = static_cast<i64>(y) + frame_header.y0;
-                if (corrected_y < 0)
-                    continue;
-                if (corrected_y >= output_channel.height())
-                    break;
+        if (metadata.bit_depth.bits_per_sample != 8)
+            return Error::from_string_literal("JPEGXLLoader: Unsupported bit-depth for CMYK image");
 
-                for (u32 x = 0; x < input_channel.width(); ++x) {
-                    auto const corrected_x = static_cast<i64>(x) + frame_header.x0;
-                    if (corrected_x < 0)
-                        continue;
-                    if (corrected_x >= output_channel.width())
-                        break;
+        auto const orientation = static_cast<TIFF::Orientation>(metadata.orientation);
+        auto oriented_bitmap = TRY(ExifOrientedCMYKBitmap::create(orientation, { width, height }));
 
-                    output_channel.set(corrected_x, corrected_y, input_channel.get(x, y));
-                }
+        auto const black_channel = *metadata.black_channel();
+
+        for (u32 y {}; y < height; ++y) {
+            for (u32 x {}; x < width; ++x) {
+                CMYK const color = CMYK(
+                    255 - clamp(m_channels[0].get(x, y), 0, 255),
+                    255 - clamp(m_channels[1].get(x, y), 0, 255),
+                    255 - clamp(m_channels[2].get(x, y), 0, 255),
+                    255 - clamp(m_channels[black_channel].get(x, y), 0, 255));
+                oriented_bitmap.set_pixel(x, y, color);
             }
-        };
+        }
+
+        return oriented_bitmap.bitmap();
     }
 
     ErrorOr<NonnullRefPtr<Bitmap>> to_bitmap(ImageMetadata const& metadata) const
@@ -1216,9 +1383,19 @@ public:
         return oriented_bitmap.bitmap();
     }
 
-    Vector<Channel>& channels()
+    virtual Vector<Channel> const& channels() const override
     {
         return m_channels;
+    }
+
+    virtual Vector<Channel>& channels() override
+    {
+        return m_channels;
+    }
+
+    IntRect rect() const
+    {
+        return active_rectangle();
     }
 
 private:
@@ -1229,178 +1406,12 @@ private:
     {
     }
 
+    IntRect active_rectangle() const override
+    {
+        return IntRect(0, 0, m_channels[0].width(), m_channels[0].height());
+    }
+
     Vector<Channel> m_channels;
-};
-///
-
-/// H.5 - Self-correcting predictor
-struct Neighborhood {
-    i32 N {};
-    i32 NW {};
-    i32 NE {};
-    i32 W {};
-    i32 NN {};
-    i32 WW {};
-    i32 NEE {};
-};
-
-class SelfCorrectingData {
-public:
-    struct Predictions {
-        i32 prediction {};
-        Array<i32, 4> subpred {};
-
-        i32 max_error {};
-        i32 true_err {};
-        Array<i32, 4> err {};
-    };
-
-    static ErrorOr<SelfCorrectingData> create(WPHeader const& wp_params, u32 width)
-    {
-        SelfCorrectingData self_correcting_data { wp_params };
-        self_correcting_data.m_width = width;
-
-        self_correcting_data.m_previous = TRY(FixedArray<Predictions>::create(width));
-        self_correcting_data.m_current_row = TRY(FixedArray<Predictions>::create(width));
-        self_correcting_data.m_next_row = TRY(FixedArray<Predictions>::create(width));
-
-        return self_correcting_data;
-    }
-
-    void register_next_row()
-    {
-        auto tmp = move(m_previous);
-        m_previous = move(m_current_row);
-        m_current_row = move(m_next_row);
-        // We reuse m_previous to avoid an allocation, no values are kept
-        // everything will be overridden.
-        m_next_row = move(tmp);
-        m_current_row_index++;
-    }
-
-    Predictions compute_predictions(Neighborhood const& neighborhood, u32 x)
-    {
-        auto& current_predictions = m_next_row[x];
-
-        auto const N3 = neighborhood.N << 3;
-        auto const NW3 = neighborhood.NW << 3;
-        auto const NE3 = neighborhood.NE << 3;
-        auto const W3 = neighborhood.W << 3;
-        auto const NN3 = neighborhood.NN << 3;
-
-        auto const predictions_W = predictions_for(x, Direction::West);
-        auto const predictions_N = predictions_for(x, Direction::North);
-        auto const predictions_NE = predictions_for(x, Direction::NorthEast);
-        auto const predictions_NW = predictions_for(x, Direction::NorthWest);
-        auto const predictions_WW = predictions_for(x, Direction::WestWest);
-
-        current_predictions.subpred[0] = W3 + NE3 - N3;
-        current_predictions.subpred[1] = N3 - (((predictions_W.true_err + predictions_N.true_err + predictions_NE.true_err) * wp_params.wp_p1) >> 5);
-        current_predictions.subpred[2] = W3 - (((predictions_W.true_err + predictions_N.true_err + predictions_NW.true_err) * wp_params.wp_p2) >> 5);
-        current_predictions.subpred[3] = N3 - ((predictions_NW.true_err * wp_params.wp_p3a + predictions_N.true_err * wp_params.wp_p3b + predictions_NE.true_err * wp_params.wp_p3c + (NN3 - N3) * wp_params.wp_p3d + (NW3 - W3) * wp_params.wp_p3e) >> 5);
-
-        auto const error2weight = [](i32 err_sum, u8 maxweight) -> i32 {
-            i32 shift = floor(log2(err_sum + 1)) - 5;
-            if (shift < 0)
-                shift = 0;
-            return 4 + ((static_cast<u64>(maxweight) * ((1 << 24) / ((err_sum >> shift) + 1))) >> shift);
-        };
-
-        Array<i32, 4> weight {};
-        for (u8 i = 0; i < weight.size(); ++i) {
-            auto err_sum = predictions_N.err[i] + predictions_W.err[i] + predictions_NW.err[i] + predictions_WW.err[i] + predictions_NE.err[i];
-            if (x == m_width - 1)
-                err_sum += predictions_W.err[i];
-            weight[i] = error2weight(err_sum, wp_params.wp_w[i]);
-        }
-
-        auto sum_weights = weight[0] + weight[1] + weight[2] + weight[3];
-        i32 const log_weight = floor(log2(sum_weights)) + 1;
-        for (u8 i = 0; i < 4; i++)
-            weight[i] = weight[i] >> (log_weight - 5);
-        sum_weights = weight[0] + weight[1] + weight[2] + weight[3];
-
-        auto s = (sum_weights >> 1) - 1;
-        for (u8 i = 0; i < 4; i++)
-            s += current_predictions.subpred[i] * weight[i];
-
-        current_predictions.prediction = static_cast<u64>(s) * ((1 << 24) / sum_weights) >> 24;
-        // if true_err_N, true_err_W and true_err_NW don't have the same sign
-        if (((predictions_N.true_err ^ predictions_W.true_err) | (predictions_N.true_err ^ predictions_NW.true_err)) <= 0) {
-            current_predictions.prediction = clamp(current_predictions.prediction, min(W3, min(N3, NE3)), max(W3, max(N3, NE3)));
-        }
-
-        auto& max_error = current_predictions.max_error;
-        max_error = predictions_W.true_err;
-        if (abs(predictions_N.true_err) > abs(max_error))
-            max_error = predictions_N.true_err;
-        if (abs(predictions_NW.true_err) > abs(max_error))
-            max_error = predictions_NW.true_err;
-        if (abs(predictions_NE.true_err) > abs(max_error))
-            max_error = predictions_NE.true_err;
-
-        return current_predictions;
-    }
-
-    // H.5.1 - General
-    void compute_errors(u32 x, i32 true_value)
-    {
-        auto& current_predictions = m_next_row[x];
-
-        current_predictions.true_err = current_predictions.prediction - (true_value << 3);
-
-        for (u8 i = 0; i < 4; ++i)
-            current_predictions.err[i] = (abs(current_predictions.subpred[i] - (true_value << 3)) + 3) >> 3;
-    }
-
-private:
-    SelfCorrectingData(WPHeader const& wp)
-        : wp_params(wp)
-    {
-    }
-
-    enum class Direction {
-        North,
-        NorthWest,
-        NorthEast,
-        West,
-        NorthNorth,
-        WestWest
-    };
-
-    Predictions predictions_for(u32 x, Direction direction) const
-    {
-        // H.5.2 - Prediction
-        auto const north = [&]() {
-            return m_current_row_index < 1 ? Predictions {} : m_current_row[x];
-        };
-
-        switch (direction) {
-        case Direction::North:
-            return north();
-        case Direction::NorthWest:
-            return x < 1 ? north() : m_current_row[x - 1];
-        case Direction::NorthEast:
-            return x + 1 >= m_current_row.size() ? north() : m_current_row[x + 1];
-        case Direction::West:
-            return x < 1 ? Predictions {} : m_next_row[x - 1];
-        case Direction::NorthNorth:
-            return m_current_row_index < 2 ? Predictions {} : m_previous[x];
-        case Direction::WestWest:
-            return x < 2 ? Predictions {} : m_next_row[x - 2];
-        }
-        VERIFY_NOT_REACHED();
-    }
-
-    WPHeader const& wp_params {};
-
-    u32 m_width {};
-    u32 m_current_row_index {};
-
-    FixedArray<Predictions> m_previous {};
-    FixedArray<Predictions> m_current_row {};
-
-    FixedArray<Predictions> m_next_row {};
 };
 ///
 
@@ -1524,9 +1535,9 @@ struct ModularData {
             }
         }
 
-        TRY(channels.try_resize(channel_infos.size()));
-        for (u32 i = 0; i < channels.size(); ++i)
-            channels[i] = TRY(Channel::create(channel_infos[i]));
+        TRY(channels.try_ensure_capacity(channel_infos.size()));
+        for (u32 i = 0; i < channel_infos.size(); ++i)
+            channels.append(TRY(Channel::create(channel_infos[i])));
 
         return {};
     }
@@ -1594,66 +1605,6 @@ static void get_properties(FixedArray<i32>& properties, Span<Channel> channels, 
     }
 }
 
-static i32 prediction(Neighborhood const& neighborhood, i32 self_correcting, u32 predictor)
-{
-    switch (predictor) {
-    case 0:
-        return 0;
-    case 1:
-        return neighborhood.W;
-    case 2:
-        return neighborhood.N;
-    case 3:
-        return (neighborhood.W + neighborhood.N) / 2;
-    case 4:
-        return abs(neighborhood.N - neighborhood.NW) < abs(neighborhood.W - neighborhood.NW) ? neighborhood.W : neighborhood.N;
-    case 5:
-        return clamp(neighborhood.W + neighborhood.N - neighborhood.NW, min(neighborhood.W, neighborhood.N), max(neighborhood.W, neighborhood.N));
-    case 6:
-        return (self_correcting + 3) >> 3;
-    case 7:
-        return neighborhood.NE;
-    case 8:
-        return neighborhood.NW;
-    case 9:
-        return neighborhood.WW;
-    case 10:
-        return (neighborhood.W + neighborhood.NW) / 2;
-    case 11:
-        return (neighborhood.N + neighborhood.NW) / 2;
-    case 12:
-        return (neighborhood.N + neighborhood.NE) / 2;
-    case 13:
-        return (6 * neighborhood.N - 2 * neighborhood.NN + 7 * neighborhood.W + neighborhood.WW + neighborhood.NEE + 3 * neighborhood.NE + 8) / 16;
-    }
-    VERIFY_NOT_REACHED();
-}
-
-static Neighborhood retrieve_neighborhood(Channel const& channel, u32 x, u32 y)
-{
-    i32 const W = x > 0 ? channel.get(x - 1, y) : (y > 0 ? channel.get(x, y - 1) : 0);
-    i32 const N = y > 0 ? channel.get(x, y - 1) : W;
-    i32 const NW = x > 0 && y > 0 ? channel.get(x - 1, y - 1) : W;
-    i32 const NE = x + 1 < channel.width() && y > 0 ? channel.get(x + 1, y - 1) : N;
-    i32 const NN = y > 1 ? channel.get(x, y - 2) : N;
-    i32 const WW = x > 1 ? channel.get(x - 2, y) : W;
-    i32 const NEE = x + 2 < channel.width() && y > 0 ? channel.get(x + 2, y - 1) : NE;
-
-    Neighborhood const neighborhood {
-        .N = N,
-        .NW = NW,
-        .NE = NE,
-        .W = W,
-        .NN = NN,
-        .WW = WW,
-        .NEE = NEE,
-    };
-
-    return neighborhood;
-}
-
-static ErrorOr<void> apply_transformation(Vector<Channel>&, TransformInfo const&, u32 bit_depth, WPHeader const&);
-
 struct ModularOptions {
     Span<ChannelInfo> channels_info;
     Optional<EntropyDecoder>& decoder;
@@ -1694,12 +1645,20 @@ static ErrorOr<ModularData> read_modular_bitstream(LittleEndianInputBitStream& s
 
     TRY(modular_data.create_channels(channels_info));
 
+    // "However, the decoder only decodes the first nb_meta_channels channels and any further channels
+    // that have a width and height that are both at most group_dim. At that point, it stops decoding."
+    u32 first_non_decoded_index = NumericLimits<u32>::max();
     auto will_be_decoded = [&](u32 index, Channel const& channel) {
         if (channel.width() == 0 || channel.height() == 0)
             return false;
         if (index < modular_data.nb_meta_channels)
             return true;
-        return channel.width() <= group_dim && channel.height() <= group_dim;
+        if (index >= first_non_decoded_index)
+            return false;
+        if (channel.width() <= group_dim && channel.height() <= group_dim)
+            return true;
+        first_non_decoded_index = index;
+        return false;
     };
 
     if constexpr (JPEGXL_DEBUG) {
@@ -1760,7 +1719,9 @@ static ErrorOr<ModularData> read_modular_bitstream(LittleEndianInputBitStream& s
             for (u32 x {}; x < channel.width(); x++) {
                 auto const neighborhood = retrieve_neighborhood(channel, x, y);
 
-                auto const self_prediction = self_correcting_data.compute_predictions(neighborhood, x);
+                SelfCorrectingData::Predictions self_prediction {};
+                if (tree.use_self_correcting_predictor())
+                    self_prediction = self_correcting_data.compute_predictions(neighborhood, x);
 
                 get_properties(properties, modular_data.channels, i, x, y, self_prediction.max_error);
                 auto const leaf_node = tree.get_leaf(properties);
@@ -1768,7 +1729,8 @@ static ErrorOr<ModularData> read_modular_bitstream(LittleEndianInputBitStream& s
                 diff = (diff * leaf_node.multiplier) + leaf_node.offset;
                 auto const total = diff + prediction(neighborhood, self_prediction.prediction, leaf_node.predictor);
 
-                self_correcting_data.compute_errors(x, total);
+                if (tree.use_self_correcting_predictor())
+                    self_correcting_data.compute_errors(x, total);
                 channel.set(x, y, total);
             }
 
@@ -1820,12 +1782,13 @@ static ErrorOr<GlobalModular> read_global_modular(LittleEndianInputBitStream& st
         }
     }
 
-    // However, the decoder only decodes the first nb_meta_channels channels and any further channels
-    // that have a width and height that are both at most group_dim. At that point, it stops decoding.
-    // No inverse transforms are applied yet.
     auto channels = TRY(FixedArray<ChannelInfo>::create(num_channels));
     channels.fill_with(ChannelInfo::from_size(frame_size));
 
+    if (channels.is_empty())
+        return global_modular;
+
+    // "No inverse transforms are applied yet."
     global_modular.modular_data = TRY(read_modular_bitstream(stream,
         {
             .channels_info = channels,
@@ -1855,6 +1818,9 @@ struct Patch {
 
     // x[] and y[] in the spec
     FixedArray<IntPoint> positions;
+
+    // "blending: arrays of count blend mode information structures, which consists of arrays of mode, alpha_channel and clamp"
+    FixedArray<FixedArray<BlendingInfo>> blending;
 };
 
 static ErrorOr<Patch> read_patch(LittleEndianInputBitStream& stream, EntropyDecoder& decoder, u32 num_extra_channels)
@@ -1868,6 +1834,9 @@ static ErrorOr<Patch> read_patch(LittleEndianInputBitStream& stream, EntropyDeco
     patch.count = TRY(decoder.decode_hybrid_uint(stream, 7)) + 1;
 
     patch.positions = TRY(FixedArray<IntPoint>::create(patch.count));
+    patch.blending = TRY(FixedArray<FixedArray<BlendingInfo>>::create(patch.count));
+    for (auto& array : patch.blending)
+        array = TRY(FixedArray<BlendingInfo>::create(num_extra_channels + 1));
 
     for (u32 j = 0; j < patch.count; j++) {
         if (j == 0) {
@@ -1888,8 +1857,23 @@ static ErrorOr<Patch> read_patch(LittleEndianInputBitStream& stream, EntropyDeco
         /* the width x height rectangle with top-left coordinates (x, y)
            is fully contained within the frame */
 
-        if (num_extra_channels > 0)
-            return Error::from_string_literal("JPEGXLLoader: Implement reading patches for extra channels");
+        for (u32 k = 0; k < num_extra_channels + 1; k++) {
+            u8 mode = TRY(decoder.decode_hybrid_uint(stream, 5));
+
+            /* mode < 8 */
+            if (mode >= 8)
+                return Error::from_string_literal("JPEGXLLoader: Invalid mode when reading patches");
+            patch.blending[j][k].mode = static_cast<BlendingInfo::BlendMode>(mode);
+            // FIXME: The condition is supposed to be "/* there is more than 1 alpha channel */"
+            //        rather than num_extra_channels > 1
+            if (mode > 3 && num_extra_channels > 1) {
+                patch.blending[j][k].alpha_channel = TRY(decoder.decode_hybrid_uint(stream, 8));
+                // FIXME: Ensure that condition
+                /* this is a valid index of an extra channel */
+            }
+            if (mode > 2)
+                patch.blending[j][k].clamp = TRY(decoder.decode_hybrid_uint(stream, 9));
+        }
     }
 
     return patch;
@@ -1907,13 +1891,105 @@ static ErrorOr<FixedArray<Patch>> read_patches(LittleEndianInputBitStream& strea
     TRY(decoder.ensure_end_state());
     return patches;
 }
+///
 
+/// I.2.1 - Quantizer
+struct Quantizer {
+    u32 global_scale {};
+    u32 quant_lf {};
+};
+
+static ErrorOr<Quantizer> read_quantizer(LittleEndianInputBitStream& stream)
+{
+    Quantizer quantizer;
+    quantizer.global_scale = U32(1 + TRY(stream.read_bits(11)), 2049 + TRY(stream.read_bits(11)), 4097 + TRY(stream.read_bits(12)), 8193 + TRY(stream.read_bits(16)));
+    quantizer.quant_lf = U32(16, 1 + TRY(stream.read_bits(5)), 1 + TRY(stream.read_bits(8)), 1 + TRY(stream.read_bits(16)));
+
+    return quantizer;
+}
+///
+
+/// I.2.2 - HF block context decoding
+struct HFBlockContext {
+    Vector<u32> block_ctx_map {};
+    Vector<u32> qf_thresholds {};
+    Array<Vector<i32>, 3> lf_thresholds {};
+};
+
+static ErrorOr<HFBlockContext> read_hf_block_context(LittleEndianInputBitStream& stream)
+{
+    HFBlockContext hf_block_context;
+
+    if (TRY(stream.read_bit())) {
+        hf_block_context.block_ctx_map = { 0, 1, 2, 2, 3, 3, 4, 5, 6, 6, 6, 6, 6,
+            7, 8, 9, 9, 10, 11, 12, 13, 14, 14, 14, 14, 14,
+            7, 8, 9, 9, 10, 11, 12, 13, 14, 14, 14, 14, 14 };
+    } else {
+        Array<u8, 3> nb_lf_thr {};
+
+        for (u8 i = 0; i < 3; i++) {
+            nb_lf_thr[i] = TRY(stream.read_bits(4));
+            for (u8 j = 0; j < nb_lf_thr[i]; j++) {
+                i32 t = unpack_signed(U32(TRY(stream.read_bits(4)), 16 + TRY(stream.read_bits(8)), 272 + TRY(stream.read_bits(16)), 65808 + TRY(stream.read_bits(32))));
+                TRY(hf_block_context.lf_thresholds[i].try_append(t));
+            }
+        }
+
+        u8 nb_qf_thr = TRY(stream.read_bits(4));
+        for (u8 i = 0; i < nb_qf_thr; i++) {
+            u32 t = 1 + U32(TRY(stream.read_bits(2)), 4 + TRY(stream.read_bits(3)), 12 + TRY(stream.read_bits(5)), 44 + TRY(stream.read_bits(8)));
+            TRY(hf_block_context.qf_thresholds.try_append(t));
+        }
+
+        u32 bsize = 39 * (nb_qf_thr + 1) * (nb_lf_thr[0] + 1) * (nb_lf_thr[1] + 1) * (nb_lf_thr[2] + 1);
+
+        if (bsize > 39 * 64)
+            return Error::from_string_literal("JPEGXLLoader: Invalid bsize in read HF Block Context");
+
+        /* num_dist = bsize <= 39 * 64 and the resulting num_clusters <= 16 */
+        auto [clusters, num_clusters] = TRY(read_pre_clustered_distributions(stream, bsize));
+        hf_block_context.block_ctx_map = move(clusters);
+        if (num_clusters > 16)
+            return Error::from_string_literal("JPEGXLLoader: Invalid num_clusters in HF Block Context");
+    }
+
+    return hf_block_context;
+}
+///
+
+/// I.2.3 - LF channel correlation factors
+struct LfChannelCorrelation {
+    u32 colour_factor { 84 };
+    f32 base_correlation_x { 0.0 };
+    f32 base_correlation_b { 1.0 };
+    u8 x_factor_lf { 128 };
+    u8 b_factor_lf { 128 };
+};
+
+static ErrorOr<LfChannelCorrelation> read_lf_channel_correlation(LittleEndianInputBitStream& stream)
+{
+    LfChannelCorrelation lf_channel_correlation;
+
+    bool all_default = TRY(stream.read_bit());
+    if (!all_default) {
+        lf_channel_correlation.colour_factor = U32(84, 256, 2 + TRY(stream.read_bits(8)), 258 + TRY(stream.read_bits(16)));
+        lf_channel_correlation.base_correlation_x = TRY(F16(stream));
+        lf_channel_correlation.base_correlation_b = TRY(F16(stream));
+        lf_channel_correlation.x_factor_lf = TRY(F16(stream));
+        lf_channel_correlation.b_factor_lf = TRY(F16(stream));
+    }
+
+    return lf_channel_correlation;
+}
 ///
 
 /// G.1 - LfGlobal
 struct LfGlobal {
     FixedArray<Patch> patches;
     LfChannelDequantization lf_dequant;
+    Quantizer quantizer;
+    HFBlockContext hf_block_ctx;
+    LfChannelCorrelation lf_chan_corr;
     GlobalModular gmodular;
 };
 
@@ -1938,8 +2014,11 @@ static ErrorOr<LfGlobal> read_lf_global(LittleEndianInputBitStream& stream,
 
     lf_global.lf_dequant = TRY(read_lf_channel_dequantization(stream));
 
-    if (frame_header.encoding == Encoding::kVarDCT)
-        TODO();
+    if (frame_header.encoding == Encoding::kVarDCT) {
+        lf_global.quantizer = TRY(read_quantizer(stream));
+        lf_global.hf_block_ctx = TRY(read_hf_block_context(stream));
+        lf_global.lf_chan_corr = TRY(read_lf_channel_correlation(stream));
+    }
 
     lf_global.gmodular = TRY(read_global_modular(stream, frame_size, frame_header, metadata));
 
@@ -1947,317 +2026,547 @@ static ErrorOr<LfGlobal> read_lf_global(LittleEndianInputBitStream& stream,
 }
 ///
 
-/// G.2 - LfGroup
-static ErrorOr<void> read_lf_group(LittleEndianInputBitStream&,
-    Span<Channel> channels,
-    FrameHeader const& frame_header)
+/// Helpers to decode groups for the GlobalModular
+static IntRect rect_for_group(ChannelInfo const& info, u32 group_dim, u32 group_index)
 {
-    // LF coefficients
-    if (frame_header.encoding == Encoding::kVarDCT) {
-        TODO();
-    }
-
-    // ModularLfGroup
-    for (auto const& channel : channels) {
-        if (channel.decoded())
-            continue;
-
-        if (channel.hshift() < 3 || channel.vshift() < 3)
-            continue;
-
-        dbgln("Fixme: Decode ModularLFGroup for channel: {}x{}(h:{}, v:{})", channel.width(), channel.height(), channel.hshift(), channel.vshift());
-    }
-
-    // HF metadata
-    if (frame_header.encoding == Encoding::kVarDCT) {
-        TODO();
-    }
-
-    return {};
-}
-///
-
-/// H.6 - Transformations
-static void apply_rct(Span<Channel> channels, TransformInfo const& transformation)
-{
-    for (u32 y {}; y < channels[transformation.begin_c].height(); y++) {
-        for (u32 x {}; x < channels[transformation.begin_c].width(); x++) {
-
-            auto a = channels[transformation.begin_c + 0].get(x, y);
-            auto b = channels[transformation.begin_c + 1].get(x, y);
-            auto c = channels[transformation.begin_c + 2].get(x, y);
-
-            i32 d {};
-            i32 e {};
-            i32 f {};
-
-            auto const permutation = transformation.rct_type / 7;
-            auto const type = transformation.rct_type % 7;
-            if (type == 6) { // YCgCo
-                auto const tmp = a - (c >> 1);
-                e = c + tmp;
-                f = tmp - (b >> 1);
-                d = f + b;
-            } else {
-                if (type & 1)
-                    c = c + a;
-                if ((type >> 1) == 1)
-                    b = b + a;
-                if ((type >> 1) == 2)
-                    b = b + ((a + c) >> 1);
-                d = a;
-                e = b;
-                f = c;
-            }
-
-            Array<i32, 3> v {};
-            v[permutation % 3] = d;
-            v[(permutation + 1 + (permutation / 3)) % 3] = e;
-            v[(permutation + 2 - (permutation / 3)) % 3] = f;
-
-            channels[transformation.begin_c + 0].set(x, y, v[0]);
-            channels[transformation.begin_c + 1].set(x, y, v[1]);
-            channels[transformation.begin_c + 2].set(x, y, v[2]);
-        }
-    }
-}
-
-// H.6.4  Palette
-static constexpr i16 kDeltaPalette[72][3] = {
-    { 0, 0, 0 }, { 4, 4, 4 }, { 11, 0, 0 }, { 0, 0, -13 }, { 0, -12, 0 }, { -10, -10, -10 },
-    { -18, -18, -18 }, { -27, -27, -27 }, { -18, -18, 0 }, { 0, 0, -32 }, { -32, 0, 0 }, { -37, -37, -37 },
-    { 0, -32, -32 }, { 24, 24, 45 }, { 50, 50, 50 }, { -45, -24, -24 }, { -24, -45, -45 }, { 0, -24, -24 },
-    { -34, -34, 0 }, { -24, 0, -24 }, { -45, -45, -24 }, { 64, 64, 64 }, { -32, 0, -32 }, { 0, -32, 0 },
-    { -32, 0, 32 }, { -24, -45, -24 }, { 45, 24, 45 }, { 24, -24, -45 }, { -45, -24, 24 }, { 80, 80, 80 },
-    { 64, 0, 0 }, { 0, 0, -64 }, { 0, -64, -64 }, { -24, -24, 45 }, { 96, 96, 96 }, { 64, 64, 0 },
-    { 45, -24, -24 }, { 34, -34, 0 }, { 112, 112, 112 }, { 24, -45, -45 }, { 45, 45, -24 }, { 0, -32, 32 },
-    { 24, -24, 45 }, { 0, 96, 96 }, { 45, -24, 24 }, { 24, -45, -24 }, { -24, -45, 24 }, { 0, -64, 0 },
-    { 96, 0, 0 }, { 128, 128, 128 }, { 64, 0, 64 }, { 144, 144, 144 }, { 96, 96, 0 }, { -36, -36, 36 },
-    { 45, -24, -45 }, { 45, -45, -24 }, { 0, 0, -96 }, { 0, 128, 128 }, { 0, 96, 0 }, { 45, 24, -45 },
-    { -128, 0, 0 }, { 24, -45, 24 }, { -45, 24, -45 }, { 64, 0, -64 }, { 64, -64, -64 }, { 96, 0, 96 },
-    { 45, -45, 24 }, { 24, 45, -45 }, { 64, 64, -64 }, { 128, 128, 0 }, { 0, 0, -128 }, { -24, 45, -45 }
-};
-
-static ErrorOr<void> apply_palette(Vector<Channel>& channel,
-    TransformInfo const& tr,
-    u32 bitdepth,
-    WPHeader const& wp_params)
-{
-    auto first = tr.begin_c + 1;
-    auto last = tr.begin_c + tr.num_c;
-    for (u32 i = first + 1; i <= last; i++)
-        channel.insert(i, TRY(channel[first].copy()));
-    for (u32 c = 0; c < tr.num_c; c++) {
-        auto self_correcting_data = TRY(SelfCorrectingData::create(wp_params, channel[first].width()));
-
-        for (u32 y = 0; y < channel[first].height(); y++) {
-            for (u32 x = 0; x < channel[first].width(); x++) {
-                i32 index = channel[first + c].get(x, y);
-                auto is_delta = index < static_cast<i64>(tr.nb_deltas);
-                i32 value {};
-                if (index >= 0 && index < static_cast<i64>(tr.nb_colours)) {
-                    value = channel[0].get(index, c);
-                } else if (index >= static_cast<i64>(tr.nb_colours)) {
-                    index -= tr.nb_colours;
-                    if (index < 64) {
-                        value = ((index >> (2 * c)) % 4) * ((1 << bitdepth) - 1) / 4
-                            + (1 << max(0, bitdepth - 3));
-                    } else {
-                        index -= 64;
-                        for (u32 i = 0; i < c; i++)
-                            index = index / 5;
-                        value = (index % 5) * ((1 << bitdepth) - 1) / 4;
-                    }
-                } else if (c < 3) {
-                    index = (-index - 1) % 143;
-                    value = kDeltaPalette[(index + 1) >> 1][c];
-                    if ((index & 1) == 0)
-                        value = -value;
-                    if (bitdepth > 8)
-                        value <<= min(bitdepth, 24) - 8;
-                } else {
-                    value = 0;
-                }
-                channel[first + c].set(x, y, value);
-                if (is_delta) {
-                    auto const original = channel[first + c].get(x, y);
-                    auto const neighborhood = retrieve_neighborhood(channel[first + c], x, y);
-                    auto const self_prediction = self_correcting_data.compute_predictions(neighborhood, x);
-                    auto const pred = prediction(neighborhood, self_prediction.prediction, tr.d_pred);
-                    channel[first + c].set(x, y, original + pred);
-                }
-            }
-        }
-    }
-    channel.remove(0);
-    return {};
-}
-
-// H.6.2.2 - Horizontal inverse squeeze step
-static i32 tendency(i32 A, i32 B, i32 C)
-{
-    if (A >= B && B >= C) {
-        auto X = (4 * A - 3 * C - B + 6) / 12;
-        if (X - (X & 1) > 2 * (A - B))
-            X = 2 * (A - B) + 1;
-        if (X + (X & 1) > 2 * (B - C))
-            X = 2 * (B - C);
-        return X;
-    } else if (A <= B && B <= C) {
-        auto X = (4 * A - 3 * C - B - 6) / 12;
-        if (X + (X & 1) < 2 * (A - B))
-            X = 2 * (A - B) - 1;
-        if (X - (X & 1) < 2 * (B - C))
-            X = 2 * (B - C);
-        return X;
-    }
-    return 0;
-}
-
-static ErrorOr<void> horiz_isqueeze(Channel const& input_1, Channel const& input_2, Channel& output)
-{
-    // "This step takes two input channels of sizes W1 × H and W2 × H"
-    if (input_1.height() != input_2.height())
-        return Error::from_string_literal("JPEGXLLoader: Invalid size when undoing squeeze transform");
-    auto h = input_1.height();
-    auto w1 = input_1.width();
-    auto w2 = input_2.width();
-
-    // "Either W1 == W2 or W1 == W2 + 1."
-    if (w1 != w2 && w1 != w2 + 1)
-        return Error::from_string_literal("JPEGXLLoader: Invalid size when undoing squeeze transform");
-
-    // "output channel of size (W1 + W2) × H."
-    if ((w1 + w2) != output.width() || h != output.height())
-        return Error::from_string_literal("JPEGXLLoader: Invalid size when undoing squeeze transform");
-
-    for (u32 y = 0; y < h; y++) {
-        for (u32 x = 0; x < w2; x++) {
-            auto avg = input_1.get(x, y);
-            auto residu = input_2.get(x, y);
-            auto next_avg = (x + 1 < w1 ? input_1.get(x + 1, y) : avg);
-            auto left = (x > 0 ? output.get((x << 1) - 1, y) : avg);
-            auto diff = residu + tendency(left, avg, next_avg);
-            auto first = avg + diff / 2;
-            output.set(2 * x, y, first);
-            output.set(2 * x + 1, y, first - diff);
-        }
-        if (w1 > w2)
-            output.set(2 * w2, y, input_1.get(w2, y));
-    }
-    return {};
-}
-
-// H.6.2.3 -  Vertical inverse squeeze step
-static ErrorOr<void> vert_isqueeze(Channel const& input_1, Channel const& input_2, Channel& output)
-{
-    // "This step takes two input channels of sizes W × H1 and W × H2"
-    if (input_1.width() != input_2.width())
-        return Error::from_string_literal("JPEGXLLoader: Invalid size when undoing squeeze transform");
-    auto w = input_1.width();
-    auto h1 = input_1.height();
-    auto h2 = input_2.height();
-
-    // "Either H1 == H2 or H1 == H2 + 1."
-    if (h1 != h2 && h1 != h2 + 1)
-        return Error::from_string_literal("JPEGXLLoader: Invalid size when undoing squeeze transform");
-
-    // "output channel of size W × (H1 + H2)."
-    if ((h1 + h2) != output.height() || w != output.width())
-        return Error::from_string_literal("JPEGXLLoader: Invalid size when undoing squeeze transform");
-
-    for (u32 y = 0; y < h2; y++) {
-        for (u32 x = 0; x < w; x++) {
-            auto avg = input_1.get(x, y);
-            auto residu = input_2.get(x, y);
-            auto next_avg = (y + 1 < h1 ? input_1.get(x, y + 1) : avg);
-            auto top = (y > 0 ? output.get(x, (y << 1) - 1) : avg);
-            auto diff = residu + tendency(top, avg, next_avg);
-            auto first = avg + diff / 2;
-            output.set(x, 2 * y, first);
-            output.set(x, 2 * y + 1, first - diff);
-        }
-    }
-    if (h1 > h2) {
-        for (u32 x = 0; x < w; x++)
-            output.set(x, 2 * h2, input_1.get(x, h2));
-    }
-    return {};
-}
-
-static ErrorOr<void> apply_squeeze(
-    Vector<Channel>& channel,
-    TransformInfo const& transformation)
-{
-    auto const& sp = transformation.sp;
-    for (i64 i = sp.size() - 1; i >= 0; i--) {
-        auto begin = transformation.sp[i].begin_c;
-        auto end = begin + transformation.sp[i].num_c - 1;
-
-        auto r = sp[i].in_place ? end + 1 : channel.size() + begin - end - 1;
-        for (u32 c = begin; c <= end; c++) {
-            Optional<Channel> output;
-            if (sp[i].horizontal) {
-                output = TRY(channel[c].copy(IntSize(channel[c].width() + channel[r].width(), channel[c].height())));
-                TRY(horiz_isqueeze(channel[c], channel[r], *output));
-            } else {
-                output = TRY(channel[c].copy(IntSize(channel[c].width(), channel[c].height() + channel[r].height())));
-                TRY(vert_isqueeze(channel[c], channel[r], *output));
-            }
-            channel[c] = output.release_value();
-            /* Remove the channel with index r */
-            channel.remove(r);
-        }
-    }
-    return {};
-}
-
-static ErrorOr<void> apply_transformation(
-    Vector<Channel>& channels,
-    TransformInfo const& transformation,
-    u32 bit_depth,
-    WPHeader const& wp_header)
-{
-    switch (transformation.tr) {
-    case TransformInfo::TransformId::kRCT:
-        apply_rct(channels, transformation);
-        break;
-    case TransformInfo::TransformId::kPalette:
-        return apply_palette(channels, transformation, bit_depth, wp_header);
-    case TransformInfo::TransformId::kSqueeze:
-        return apply_squeeze(channels, transformation);
-    default:
-        VERIFY_NOT_REACHED();
-    }
-    return {};
-}
-///
-
-/// G.3.2 - PassGroup
-static IntRect rect_for_group(Channel const& channel, u32 group_dim, u32 group_index)
-{
-    u32 horizontal_group_dim = group_dim >> channel.hshift();
-    u32 vertical_group_dim = group_dim >> channel.vshift();
+    u32 horizontal_group_dim = group_dim >> info.hshift;
+    u32 vertical_group_dim = group_dim >> info.vshift;
 
     IntRect rect(0, 0, horizontal_group_dim, vertical_group_dim);
 
-    auto nb_groups_per_row = (channel.width() + horizontal_group_dim - 1) / horizontal_group_dim;
+    auto nb_groups_per_row = (info.width + horizontal_group_dim - 1) / horizontal_group_dim;
     auto group_x = group_index % nb_groups_per_row;
     rect.set_x(group_x * horizontal_group_dim);
-    if (group_x == nb_groups_per_row - 1 && channel.width() % horizontal_group_dim != 0) {
-        rect.set_width(channel.width() % horizontal_group_dim);
+    if (group_x == nb_groups_per_row - 1 && info.width % horizontal_group_dim != 0) {
+        rect.set_width(info.width % horizontal_group_dim);
     }
 
-    auto nb_groups_per_column = (channel.height() + vertical_group_dim - 1) / vertical_group_dim;
+    auto nb_groups_per_column = (info.height + vertical_group_dim - 1) / vertical_group_dim;
     auto group_y = group_index / nb_groups_per_row;
     rect.set_y(group_y * vertical_group_dim);
-    if (group_y == nb_groups_per_column - 1 && channel.height() % vertical_group_dim != 0) {
-        rect.set_height(channel.height() % vertical_group_dim);
+    if (group_y == nb_groups_per_column - 1 && info.height % vertical_group_dim != 0) {
+        rect.set_height(info.height % vertical_group_dim);
     }
 
     return rect;
 }
 
+struct GroupOptions {
+    GlobalModular& global_modular;
+    FrameHeader const& frame_header;
+    u32 group_index {};
+    u32 stream_index {};
+    u32 bit_depth {};
+    u32 group_dim {};
+};
+
+template<CallableAs<bool, Channel const&> F1, CallableAs<void, ChannelInfo const&> F2>
+static ErrorOr<void> read_group_data(
+    LittleEndianInputBitStream& stream,
+    GroupOptions&& options,
+    F1&& match_decode_conditions,
+    F2&& debug_print)
+{
+    auto& [global_modular, frame_header, group_index, stream_index, bit_depth, group_dim] = options;
+
+    Vector<ChannelInfo> channels_info;
+    Vector<Channel&> original_channels;
+    auto& channels = global_modular.modular_data.channels;
+    for (auto& channel : channels) {
+        if (!match_decode_conditions(channel))
+            continue;
+
+        auto rect_size = rect_for_group(channel.info(), group_dim, group_index).size();
+        TRY(channels_info.try_append({
+            .width = static_cast<u32>(rect_size.width()),
+            .height = static_cast<u32>(rect_size.height()),
+            .hshift = channel.hshift(),
+            .vshift = channel.vshift(),
+        }));
+        TRY(original_channels.try_append(channel));
+    }
+    if (channels_info.is_empty())
+        return {};
+
+    if constexpr (JPEGXL_DEBUG)
+        debug_print(original_channels[0].info());
+
+    auto decoded = TRY(read_modular_bitstream(stream,
+        {
+            .channels_info = channels_info,
+            .decoder = global_modular.decoder,
+            .global_tree = global_modular.ma_tree,
+            .group_dim = group_dim,
+            .stream_index = stream_index,
+            .apply_transformations = ModularOptions::ApplyTransformations::Yes,
+            .bit_depth = bit_depth,
+        }));
+
+    // The decoded modular group data is then copied into the partially decoded GlobalModular image in the corresponding positions.
+    for (u32 i = 0; i < original_channels.size(); ++i) {
+        auto destination = rect_for_group(original_channels[i].info(), group_dim, group_index);
+        original_channels[i].copy_from(destination, decoded.channels[i]);
+    }
+
+    return {};
+}
+///
+
+/// G.2 - LfGroup
+static constexpr i32 DCT_UNINITIALIZED = -2;
+static constexpr i32 DCT_COVERED = -1;
+
+struct VarDCTLfGroup {
+    Channel x_from_y;
+    Channel b_from_y;
+    // dct_select hold DCT information in the top-left corner of every varblock.
+    // -1 means occupied by a varblock but non top-left.
+    // -2 is the default value, which shouldn't be found after proper initialization.
+    Channel dct_select;
+    Channel hf_mul;
+    Channel sharpness;
+};
+
+struct LFGroupOptions {
+    GlobalModular& global_modular;
+    FrameHeader const& frame_header;
+    u32 group_index {};
+    u32 stream_index {};
+    u32 bit_depth {};
+};
+
+// G.2.2 - LF coefficients
+static ErrorOr<void> read_lf_coefficients(LittleEndianInputBitStream&, FrameHeader const& frame_header)
+{
+    // "If the kUseLfFrame flag in frame_header is set, this subclause is skipped"
+    if (frame_header.flags & FrameHeader::Flags::kUseLfFrame)
+        return {};
+
+    return Error::from_string_literal("JPEGXLLoader: Implement reading LF coefficients");
+}
+
+// I.1 - Transform types
+enum class TransformType : u8 {
+    DCT8x8 = 0,
+    Hornuss = 1,
+    DCT2x2 = 2,
+    DCT4x4 = 3,
+    DCT16x16 = 4,
+    DCT32x32 = 5,
+    DCT16x8 = 6,
+    DCT8x16 = 7,
+    DCT32x8 = 8,
+    DCT8x32 = 9,
+    DCT32x16 = 10,
+    DCT16x32 = 11,
+    DCT4x8 = 12,
+    DCT8x4 = 13,
+    AFV0 = 14,
+    AFV1 = 15,
+    AFV2 = 16,
+    AFV3 = 17,
+    DCT64x64 = 18,
+    DCT64x32 = 19,
+    DCT32x64 = 20,
+    DCT128x128 = 21,
+    DCT128x64 = 22,
+    DCT64x128 = 23,
+    DCT256x256 = 24,
+    DCT256x128 = 25,
+    DCT128x256 = 26,
+};
+
+// NOTE: In the spec, DCT matrices use "matrices order" so DCT16x8 is actually
+//       16 rows and 8 columns. This function return the size in "image order"
+//       with columns first and rows in second.
+static Size<u32> dct_select_to_dct_size(TransformType t)
+{
+    switch (t) {
+    case TransformType::DCT8x8:
+    case TransformType::Hornuss:
+    case TransformType::DCT2x2:
+    case TransformType::DCT4x4:
+        return { 1, 1 };
+    case TransformType::DCT16x16:
+        return { 2, 2 };
+    case TransformType::DCT32x32:
+        return { 4, 4 };
+    case TransformType::DCT16x8:
+        return { 1, 2 };
+    case TransformType::DCT8x16:
+        return { 2, 1 };
+    case TransformType::DCT32x8:
+        return { 1, 4 };
+    case TransformType::DCT8x32:
+        return { 4, 1 };
+    case TransformType::DCT32x16:
+        return { 2, 4 };
+    case TransformType::DCT16x32:
+        return { 4, 2 };
+    case TransformType::DCT4x8:
+    case TransformType::DCT8x4:
+        return { 1, 1 };
+    case TransformType::AFV0:
+    case TransformType::AFV1:
+    case TransformType::AFV2:
+    case TransformType::AFV3:
+        return { 1, 1 };
+    case TransformType::DCT64x64:
+        return { 8, 8 };
+    case TransformType::DCT64x32:
+        return { 4, 8 };
+    case TransformType::DCT32x64:
+        return { 8, 4 };
+    case TransformType::DCT128x128:
+        return { 16, 16 };
+    case TransformType::DCT128x64:
+        return { 8, 16 };
+    case TransformType::DCT64x128:
+        return { 16, 8 };
+    case TransformType::DCT256x256:
+        return { 32, 32 };
+    case TransformType::DCT256x128:
+        return { 16, 32 };
+    case TransformType::DCT128x256:
+        return { 32, 16 };
+    default:
+        VERIFY_NOT_REACHED();
+    }
+}
+
+static Size<u32> dct_select_to_image_size(TransformType t)
+{
+    return dct_select_to_dct_size(t).scaled(8);
+}
+
+// Table I.7 — Order ID for DctSelect values
+static u8 dct_select_to_order_id(TransformType t)
+{
+    switch (t) {
+    case TransformType::DCT8x8:
+        return 0;
+    case TransformType::Hornuss:
+    case TransformType::DCT2x2:
+    case TransformType::DCT4x4:
+    case TransformType::DCT4x8:
+    case TransformType::DCT8x4:
+    case TransformType::AFV0:
+    case TransformType::AFV1:
+    case TransformType::AFV2:
+    case TransformType::AFV3:
+        return 1;
+    case TransformType::DCT16x16:
+        return 2;
+    case TransformType::DCT32x32:
+        return 3;
+    case TransformType::DCT16x8:
+    case TransformType::DCT8x16:
+        return 4;
+    case TransformType::DCT32x8:
+    case TransformType::DCT8x32:
+        return 5;
+    case TransformType::DCT32x16:
+    case TransformType::DCT16x32:
+        return 6;
+    case TransformType::DCT64x64:
+        return 7;
+    case TransformType::DCT64x32:
+    case TransformType::DCT32x64:
+        return 8;
+    case TransformType::DCT128x128:
+        return 9;
+    case TransformType::DCT128x64:
+    case TransformType::DCT64x128:
+        return 10;
+    case TransformType::DCT256x256:
+        return 11;
+    case TransformType::DCT256x128:
+    case TransformType::DCT128x256:
+        return 12;
+    default:
+        VERIFY_NOT_REACHED();
+    }
+}
+
+struct LFGroupVarDCTOptions {
+    Vector<Optional<VarDCTLfGroup>>& group_data;
+    IntSize frame_size;
+    u32 num_lf_group {};
+};
+
+// G.2.4 - HF metadata
+static ErrorOr<void> read_hf_metadata(LittleEndianInputBitStream& stream,
+    LFGroupOptions& options,
+    LFGroupVarDCTOptions const& var_dct_options,
+    u32 lf_group_dim)
+{
+
+    auto group_size = rect_for_group(ChannelInfo::from_size(var_dct_options.frame_size), lf_group_dim, options.group_index).size();
+
+    // "The decoder reads nb_blocks = 1 + u(ceil(log2(ceil(width / 8) * ceil(height / 8))))."
+    u32 nb_blocks = 1 + TRY(stream.read_bits(ceil(log2(ceil_div(group_size.width(), 8) * ceil_div(group_size.height(), 8)))));
+
+    // "Then, the decoder reads a Modular sub-bitstream as described in Annex H, for an image with four channels."
+    Vector<ChannelInfo> channels_info;
+    TRY(channels_info.try_ensure_capacity(4));
+    // "the first two channels have ceil(height / 64) rows and ceil(width / 64) columns"
+    auto color_correlation_channels_size = IntSize { ceil_div(group_size.width(), 64), ceil_div(group_size.height(), 64) };
+    channels_info.unchecked_append(ChannelInfo::from_size(color_correlation_channels_size));
+    channels_info.unchecked_append(ChannelInfo::from_size(color_correlation_channels_size));
+    // "the third channel has two rows and nb_blocks columns"
+    channels_info.unchecked_append(ChannelInfo::from_size(IntSize(nb_blocks, 2)));
+    // "and the fourth channel has ceil(height / 8) rows and ceil(width / 8) columns"
+    channels_info.unchecked_append(ChannelInfo::from_size({ ceil_div(group_size.width(), 8), ceil_div(group_size.height(), 8) }));
+
+    // "The stream index is defined as follows:
+    //  - for ModularLfGroup: 1 + num_lf_groups + LF group index;
+    //  - for HFMetadata: 1 + 2 * num_lf_groups + LF group index;"
+    // We pass ModularLfGroup's stream index in LFGroupOptions, so we
+    // just need to add `num_lf_groups` here.
+    auto stream_index = options.stream_index + var_dct_options.num_lf_group;
+
+    auto decoded_channels = TRY(read_modular_bitstream(stream,
+                                    {
+                                        .channels_info = channels_info,
+                                        .decoder = options.global_modular.decoder,
+                                        .global_tree = options.global_modular.ma_tree,
+                                        .group_dim = lf_group_dim,
+                                        .stream_index = stream_index,
+                                        .apply_transformations = ModularOptions::ApplyTransformations::Yes,
+                                        .bit_depth = options.bit_depth,
+                                    }))
+                                .channels;
+
+    // "The DctSelect and HfMul fields are derived from the first and second rows of BlockInfo.
+    // These two fields have ceil(height / 8) rows and ceil(width / 8) columns."
+    auto derived_size = IntSize(ceil_div(group_size.width(), 8), ceil_div(group_size.height(), 8));
+    auto dct_select = TRY(Channel::create(ChannelInfo::from_size(derived_size)));
+    auto hf_mul = TRY(Channel::create(ChannelInfo::from_size(derived_size)));
+
+    dct_select.fill(DCT_UNINITIALIZED);
+
+    i32 x = 0;
+    i32 y = 0;
+    auto update_next_valid_position = [&]() {
+        // "This position is the earliest block in raster order that is not already covered by
+        // other varblocks. The positioned varblock is completely contained in the current LF
+        // group, does not cross group boundaries, and also does not overlap with
+        // already-positioned varblocks."
+
+        // FIXME: There has to be a smarter way of doing this.
+        while (dct_select.get(x, y) != DCT_UNINITIALIZED) {
+            if (x == derived_size.width() - 1) {
+                x = 0;
+                y += 1;
+                continue;
+            }
+            ++x;
+        }
+    };
+
+    // "They are reconstructed by iterating over the columns of BlockInfo to obtain a varblock
+    // transform type type (the sample at the first row) and a quantization multiplier mul (the
+    // sample at the second row)."
+    auto const& block_info = decoded_channels[2];
+    for (u32 column = 0; column < nb_blocks; ++column) {
+        auto type = block_info.get(column, 0);
+        if (type > 26)
+            return Error::from_string_literal("JPEGXLLoader: Invalid DctSelect value");
+
+        auto mul = block_info.get(column, 1);
+
+        // "The type is a DctSelect sample and is stored at the coordinates of the top-left
+        // 8 × 8 rectangle of the varblock."
+        dct_select.set(x, y, type);
+        // "The HfMul sample is stored at the same position and gets the value 1 + mul."
+        hf_mul.set(x, y, 1 + mul);
+
+        // We fill the whole surface of the varblock as a way to check that
+        // varblocks don't overlap.
+        auto dct_size = dct_select_to_dct_size(static_cast<TransformType>(type));
+        for (u8 y_offset = 0; y_offset < dct_size.height(); ++y_offset) {
+            for (u8 x_offset = 0; x_offset < dct_size.width(); ++x_offset) {
+                if (y_offset == 0 && x_offset == 0)
+                    continue;
+                if (dct_select.get(x + x_offset, y + y_offset) != DCT_UNINITIALIZED)
+                    return Error::from_string_literal("JPEGXLLoader: Invalid varblocks pattern");
+                dct_select.set(x + x_offset, y + y_offset, DCT_COVERED);
+            }
+        }
+        if (column != nb_blocks - 1)
+            update_next_valid_position();
+    }
+
+    // FIXME: Ensure that dct_select contains no DCT_UNINITIALIZED.
+
+    var_dct_options.group_data[options.group_index] = VarDCTLfGroup {
+        .x_from_y = move(decoded_channels[0]),
+        .b_from_y = move(decoded_channels[1]),
+        .dct_select = move(dct_select),
+        .hf_mul = move(hf_mul),
+        .sharpness = move(decoded_channels[2]),
+    };
+    return {};
+}
+
+static ErrorOr<void> read_lf_group(LittleEndianInputBitStream& stream,
+    LFGroupOptions&& options,
+    LFGroupVarDCTOptions&& var_dct_options)
+{
+    auto const& [global_modular, frame_header, group_index, stream_index, bit_depth] = options;
+
+    if (options.frame_header.encoding == Encoding::kVarDCT) {
+        if (var_dct_options.group_data.is_empty())
+            TRY(var_dct_options.group_data.try_resize(var_dct_options.num_lf_group));
+    }
+
+    // LF coefficients
+    if (frame_header.encoding == Encoding::kVarDCT)
+        TRY(read_lf_coefficients(stream, frame_header));
+
+    // ModularLfGroup
+    u32 lf_group_dim = frame_header.group_dim() * 8;
+
+    auto match_decoding_conditions = [](Channel const& channel) {
+        if (channel.decoded())
+            return false;
+        if (channel.hshift() < 3 || channel.vshift() < 3)
+            return false;
+        return true;
+    };
+    TRY(read_group_data(
+        stream,
+        GroupOptions {
+            .global_modular = global_modular,
+            .frame_header = frame_header,
+            .group_index = group_index,
+            .stream_index = stream_index,
+            .bit_depth = bit_depth,
+            .group_dim = lf_group_dim },
+        move(match_decoding_conditions),
+        [&](auto const& first_channel) { dbgln("Decoding LFGroup {} for rectangle {}", group_index, rect_for_group(first_channel, lf_group_dim, group_index)); }));
+
+    // HF metadata
+    if (options.frame_header.encoding == Encoding::kVarDCT)
+        TRY(read_hf_metadata(stream, options, var_dct_options, lf_group_dim));
+
+    return {};
+}
+///
+
+/// G.3 - HfGlobal
+struct HfGlobalPassMetadata {
+    // I.3.1 - HF coefficient order
+    // 13 Order ID and 3 color component.
+    // These spans refer to either the static, default values or
+    // a Vector of backing_data.
+    DCTOrderDescription order;
+    Vector<Vector<Point<u32>>> backing_data;
+
+    // I.3.3 - HF coefficient histograms
+    u32 nb_block_ctx {};
+    EntropyDecoder decoder;
+};
+
+struct HfGlobal {
+    // Dequantization matrices.
+    u32 num_hf_presets {};
+    FixedArray<HfGlobalPassMetadata> hf_passes;
+};
+
+// I.2.4 - Dequantization matrices
+static ErrorOr<void> read_quantization_matrices(LittleEndianInputBitStream& stream)
+{
+    // "First, the decoder reads a Bool(). If this is true, all matrices have their default encoding."
+    bool is_default = TRY(stream.read_bit());
+
+    if (!is_default)
+        return Error::from_string_literal("JPEGXLLoader: Implement reading quantization matrices");
+
+    return {};
+}
+
+// I.3 - HfPass
+static ErrorOr<void> read_hf_passes(LittleEndianInputBitStream& stream, LfGlobal const& lf_global, HfGlobal& hf_global)
+{
+    // I.3.1 - HF coefficient order
+
+    // "The decoder first reads used_orders as U32(0x5F, 0x13, 0x00, u(13))."
+    u32 used_orders = U32(0x5F, 0x13, 0x00, TRY(stream.read_bits(13)));
+
+    // "If used_orders != 0, it reads 8 pre-clustered distributions as specified in C.1."
+    Optional<EntropyDecoder> decoder;
+    if (used_orders != 0)
+        decoder = TRY(EntropyDecoder::create(stream, 8));
+
+    // "It then reads HF coefficient orders order[p][b][c] as specified by the code below,
+    // where p is the index of the current pass, b is an Order ID (see Table I.7), c is a
+    // component index, and natural_coeff_order[b] is the natural coefficient order for Order
+    // ID b, as specified in I.3.2."
+    auto const& natural_coeff_order = *TRY(DCTNaturalOrder::the());
+    for (auto& pass_data : hf_global.hf_passes) {
+        for (u8 b = 0; b < 13; b++) {
+            for (u8 c = 0; c < 3; c++) {
+                if ((used_orders & (1 << b)) != 0) {
+                    // "DecodePermutation(b) is defined as follows. The decoder reads a permutation
+                    // nat_ord_perm from a single stream (shared during the above loop) as specified
+                    // in F.3.2, where size is the number of coefficients covered by transforms with
+                    // Order ID b (so size == natural_coeff_order[b].size()) and skip = size / 64.
+                    auto size = natural_coeff_order[b][c].size();
+                    auto nat_ord_perm = TRY(decode_permutations(stream, *decoder, size, size / 64));
+
+                    Vector<Point<u32>> local_order;
+                    TRY(local_order.try_resize(size));
+                    pass_data.order[b][c] = local_order.span();
+                    TRY(pass_data.backing_data.try_append(move(local_order)));
+
+                    for (u32 i = 0; i < nat_ord_perm.size(); ++i)
+                        pass_data.order[b][c][i] = natural_coeff_order[b][c][nat_ord_perm[i]];
+                } else {
+                    pass_data.order[b][c] = natural_coeff_order[b][c];
+                }
+            }
+        }
+
+        // I.3.3 - HF coefficient histograms
+        // "Let nb_block_ctx be equal to max(block_ctx_map) + 1."
+        auto max = lf_global.hf_block_ctx.block_ctx_map[0];
+        for (auto v : lf_global.hf_block_ctx.block_ctx_map) {
+            if (v > max)
+                max = v;
+        }
+        pass_data.nb_block_ctx = max + 1;
+
+        // "The decoder reads a histogram with 495 * num_hf_presets * nb_block_ctx
+        // pre-clustered distributions D from the codestream as specified in C.1."
+        auto distributions = 495 * hf_global.num_hf_presets * pass_data.nb_block_ctx;
+        pass_data.decoder = TRY(EntropyDecoder::create(stream, distributions));
+    }
+
+    if (decoder.has_value())
+        TRY(decoder->ensure_end_state());
+
+    return {};
+}
+
+static ErrorOr<HfGlobal> read_hf_global(LittleEndianInputBitStream& stream, LfGlobal const& lf_global, u32 num_groups, u32 num_passes)
+{
+    HfGlobal hf_global;
+
+    TRY(read_quantization_matrices(stream));
+
+    // I.2.6 - Number of HF decoding presets
+    // "The decoder reads num_hf_presets as u(ceil(log2(num_groups))) + 1."
+    hf_global.num_hf_presets = TRY(stream.read_bits(ceil(log2(num_groups)))) + 1;
+
+    hf_global.hf_passes = TRY(FixedArray<HfGlobalPassMetadata>::create(num_passes));
+    TRY(read_hf_passes(stream, lf_global, hf_global));
+
+    return hf_global;
+}
+///
+
+/// G.3.2 - PassGroup
 struct PassGroupOptions {
     GlobalModular& global_modular;
     FrameHeader const& frame_header;
@@ -2270,6 +2579,7 @@ struct PassGroupModularOptions {
     u32 bit_depth {};
 };
 
+// G.4.2 - Modular group data
 static ErrorOr<void> read_modular_group_data(LittleEndianInputBitStream& stream,
     PassGroupOptions& options,
     PassGroupModularOptions const& modular_options)
@@ -2285,64 +2595,238 @@ static ErrorOr<void> read_modular_group_data(LittleEndianInputBitStream& stream,
     // for every remaining channel in the partially decoded GlobalModular image (i.e. it is not a meta-channel,
     // the channel dimensions exceed group_dim × group_dim, and hshift < 3 or vshift < 3, and the channel has
     // not been already decoded in a previous pass)
-    Vector<ChannelInfo> channels_info;
-    Vector<Channel&> original_channels;
-    auto& channels = global_modular.modular_data.channels;
-    for (auto [i, channel] : enumerate(channels)) {
-        if (i < global_modular.modular_data.nb_meta_channels)
-            continue;
-        if (channels[i].width() <= frame_header.group_dim() && channels[i].height() <= frame_header.group_dim())
-            continue;
-        if (channel.hshift() >= 3 && channel.vshift() >= 3)
-            continue;
+    auto match_decoding_conditions = [&](auto const& channel) {
         if (channel.decoded())
-            continue;
+            return false;
         auto channel_min_shift = min(channel.hshift(), channel.vshift());
         if (channel_min_shift < min_shift || channel_min_shift >= max_shift)
-            continue;
+            return false;
+        return true;
+    };
 
-        auto rect_size = rect_for_group(channel, frame_header.group_dim(), group_index).size();
-        TRY(channels_info.try_append({
-            .width = static_cast<u32>(rect_size.width()),
-            .height = static_cast<u32>(rect_size.height()),
-            .hshift = channel.hshift(),
-            .vshift = channel.vshift(),
-        }));
-        TRY(original_channels.try_append(channel));
-    }
-    if (channels_info.is_empty())
-        return {};
-
-    dbgln_if(JPEGXL_DEBUG, "Decoding pass {} for rectangle {}", pass_index, rect_for_group(original_channels[0], frame_header.group_dim(), group_index));
-
-    auto decoded = TRY(read_modular_bitstream(stream,
+    TRY(read_group_data(stream,
         {
-            .channels_info = channels_info,
-            .decoder = global_modular.decoder,
-            .global_tree = global_modular.ma_tree,
-            .group_dim = frame_header.group_dim(),
+            .global_modular = global_modular,
+            .frame_header = frame_header,
+            .group_index = group_index,
             .stream_index = stream_index,
-            .apply_transformations = ModularOptions::ApplyTransformations::Yes,
             .bit_depth = modular_options.bit_depth,
-        }));
-
-    // The decoded modular group data is then copied into the partially decoded GlobalModular image in the corresponding positions.
-    for (u32 i = 0; i < original_channels.size(); ++i) {
-        auto destination = rect_for_group(original_channels[i], frame_header.group_dim(), group_index);
-        original_channels[i].copy_from(destination, decoded.channels[i]);
-    }
+            .group_dim = frame_header.group_dim(),
+        },
+        move(match_decoding_conditions),
+        [&](auto const& first_channel) { dbgln_if(JPEGXL_DEBUG, "Decoding pass {} for rectangle {}", options.pass_index, rect_for_group(first_channel, frame_header.group_dim(), group_index)); }));
 
     return {};
 }
 
+struct PassGroupVarDCTOptions {
+    LfGlobal const& lf_global;
+    Vector<Optional<VarDCTLfGroup>> const& lf_groups;
+    HfGlobal& hf_global;
+};
+
+static constexpr Array CoeffFreqContext = to_array<u8>({ 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+    15, 15, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22,
+    23, 23, 23, 23, 24, 24, 24, 24, 25, 25, 25, 25, 26, 26, 26, 26,
+    27, 27, 27, 27, 28, 28, 28, 28, 29, 29, 29, 29, 30, 30, 30, 30 });
+
+static constexpr Array CoeffNumNonzeroContext = to_array<u8>({ 0, 0, 31, 62, 62, 93, 93, 93, 93, 123, 123, 123, 123,
+    152, 152, 152, 152, 152, 152, 152, 152, 180, 180, 180, 180, 180,
+    180, 180, 180, 180, 180, 180, 180, 206, 206, 206, 206, 206, 206,
+    206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206,
+    206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206, 206 });
+
+// I.4 - Decoding of quantized HF coefficients
+static ErrorOr<void> read_hf_coefficients(LittleEndianInputBitStream& stream,
+    PassGroupOptions const& options,
+    PassGroupVarDCTOptions&& var_dct_options)
+{
+    auto& hf_global = var_dct_options.hf_global;
+    auto& hf_pass = hf_global.hf_passes[options.pass_index];
+    auto const& hf_group = *var_dct_options.lf_groups[options.group_index];
+
+    auto nb_block_ctx = hf_pass.nb_block_ctx;
+
+    auto hfp = TRY(stream.read_bits(ceil(log2(hf_global.num_hf_presets))));
+    u32 clusters_size = 495 * nb_block_ctx;
+    u32 offset = clusters_size * hfp;
+
+    Optional<ScopeGuard<Function<void()>>> restore_histogram;
+    TRY(hf_pass.decoder.temporarily_restrict_histogram(restore_histogram, offset, clusters_size));
+    auto& decoder = hf_pass.decoder;
+
+    // "After selecting the histogram and coefficient order, the decoder reads symbols
+    // from an entropy-coded stream, as specified in C.3.3."
+
+    // "The decoder proceeds by decoding varblocks in raster order;"
+    auto const& varblock_description = hf_group.dct_select;
+    auto const& order = hf_pass.order;
+
+    Array<Channel, 3> non_zeros_channels = {
+        TRY(Channel::create(varblock_description.info())),
+        TRY(Channel::create(varblock_description.info())),
+        TRY(Channel::create(varblock_description.info()))
+    };
+
+    // "If the kUseLfFrame flag in frame_header is set [...] the quantized LF coefficients LfQuant are all set to −∞, that is,
+    // regardless of lf_thresholds, the value of lf_idx at the end of the function BlockContext() (I.4) is always equal to zero."
+    Array<i32, 3> qdc;
+    qdc.fill(NumericLimits<i32>::min());
+
+    for (u32 y = 0; y < varblock_description.height(); ++y) {
+        for (u32 x = 0; x < varblock_description.width(); ++x) {
+            auto dct_type = varblock_description.get(x, y);
+            if (dct_type == DCT_UNINITIALIZED || dct_type == DCT_COVERED)
+                continue;
+            // "For each varblock of size W × H,"
+            auto transform_type = static_cast<TransformType>(dct_type);
+            auto varblock_size = dct_select_to_image_size(transform_type);
+            auto W = varblock_size.width();
+            auto H = varblock_size.height();
+            // "covering num_blocks = (W / 8) * (H / 8) blocks,"
+            u32 num_blocks = (W / 8) * (H / 8);
+
+            // "s is the Order ID (see Table I.7) of the DctSelect value"
+            auto s = dct_select_to_order_id(transform_type);
+            // "qf is the HfMul value for the current varblock"
+            u32 qf = hf_group.hf_mul.get(x, y);
+
+            // FIXME: Implement this for in-frame LF coefficients.
+            // "qdc[3] are the quantized LF values of LfQuant (G.2.2) corresponding to
+            // (the top-left 8×8 block within) the current varblock (taking into account jpeg_upsampling if needed)."
+
+            // "The lists of thresholds qf_thresholds and lf_thresholds[3], and block_ctx_map are as decoded in LfGlobal"
+            auto const& qf_thresholds = var_dct_options.lf_global.hf_block_ctx.qf_thresholds;
+            auto const& lf_thresholds = var_dct_options.lf_global.hf_block_ctx.lf_thresholds;
+            auto const& block_ctx_map = var_dct_options.lf_global.hf_block_ctx.block_ctx_map;
+
+            // "for each varblock it reads channels Y, X, then B;"
+            // "where c is the current channel (with 0=X, 1=Y, 2=B)" - from the second paragraph of I.4
+            for (u8 c : { 1, 0, 2 }) {
+                auto BlockContext = [&]() -> u32 {
+                    u32 idx = (c < 2 ? c ^ 1 : 2) * 13 + s;
+                    idx *= (qf_thresholds.size() + 1);
+                    for (auto t : qf_thresholds)
+                        if (qf > t)
+                            idx++;
+                    for (u8 i = 0; i < 3; i++)
+                        idx *= (lf_thresholds[i].size() + 1);
+                    u32 lf_idx = 0;
+                    for (auto t : lf_thresholds[0])
+                        if (qdc[0] > t)
+                            lf_idx++;
+                    lf_idx *= (lf_thresholds[2].size() + 1);
+                    for (auto t : lf_thresholds[2])
+                        if (qdc[2] > t)
+                            lf_idx++;
+                    lf_idx *= (lf_thresholds[1].size() + 1);
+                    for (auto t : lf_thresholds[1])
+                        if (qdc[1] > t)
+                            lf_idx++;
+                    return block_ctx_map[idx + lf_idx];
+                };
+
+                auto NonZerosContext = [&](u32 predicted) -> u32 {
+                    if (predicted > 64)
+                        predicted = 64;
+                    if (predicted < 8)
+                        return BlockContext() + nb_block_ctx * predicted;
+                    return BlockContext() + nb_block_ctx * (4 + predicted / 2);
+                };
+
+                auto NonZeros = [&](u32 x, u32 y) -> i32& {
+                    return non_zeros_channels[c].get(x, y);
+                };
+
+                auto PredictedNonZeros = [&](u32 x, u32 y) -> u32 {
+                    if (x == 0 and y == 0)
+                        return 32;
+                    if (x == 0)
+                        return NonZeros(x, y - 1);
+                    if (y == 0)
+                        return NonZeros(x - 1, y);
+                    return (NonZeros(x, y - 1) + NonZeros(x - 1, y) + 1) >> 1;
+                };
+
+                // "the decoder reads an integer non_zeros using
+                // DecodeHybridVarLenUint(NonZerosContext(PredictedNonZeros(x, y)) + offset)."
+                u32 context = NonZerosContext(PredictedNonZeros(x, y));
+                auto non_zeros = TRY(decoder.decode_hybrid_uint(stream, context));
+
+                // The decoder then sets the NonZeros(x, y) value for each block in the
+                // current varblock as follows: for each i in [0, W / 8) and j in [0, H / 8),
+                // NonZeros(x + i, y + j) is set to (non_zeros + num_blocks − 1) Idiv num_blocks.
+                for (u32 j = 0; j < H / 8; ++j) {
+                    for (u32 i = 0; i < W / 8; ++i)
+                        NonZeros(x + i, y + j) = (non_zeros + num_blocks - 1) / num_blocks;
+                }
+
+                // "If non_zeros reaches 0, the decoder stops decoding further coefficients for the current block."
+                if (non_zeros == 0)
+                    continue;
+
+                auto CoefficientContext = [&](u32 k, u32 non_zeros, u32 num_blocks, u32 prev) -> u32 {
+                    non_zeros = (non_zeros + num_blocks - 1) / num_blocks;
+                    k = k / num_blocks;
+                    return (CoeffNumNonzeroContext[non_zeros] + CoeffFreqContext[k]) * 2 + prev + BlockContext() * 458 + 37 * nb_block_ctx;
+                };
+
+                // "Let size = W * H."
+                auto size = W * H;
+                // "For k in the range [num_blocks, size)"
+                u32 last_ucoeff {};
+                for (u32 k = num_blocks; k < size; ++k) {
+                    // "the decoder reads an integer ucoeff from the codestream, using
+                    // DecodeHybridVarLenUint(CoefficientContext(k, non_zeros, num_blocks, size, prev) + offset),
+                    // where prev is computed as specified in the following code:"
+                    auto prev = [&]() -> u32 {
+                        if (k == num_blocks) {
+                            if (non_zeros > size / 16)
+                                return 0;
+                            else
+                                return 1;
+                        } else {
+                            if (last_ucoeff == 0)
+                                return 0;
+                            else
+                                return 1;
+                        }
+                    }();
+
+                    auto ucoeff = TRY(decoder.decode_hybrid_uint(stream, CoefficientContext(k, non_zeros, num_blocks, prev) + offset));
+                    last_ucoeff = ucoeff;
+
+                    // "The decoder then sets the quantized HF coefficient in the position corresponding to index
+                    // order[p][s][c][k] to UnpackSigned(ucoeff), where p is the index of the current pass and s
+                    // and c are the Order ID and current channel index as above."
+                    auto destination = order[s][c][k];
+                    // FIXME: Actually do something with the decoded data.
+                    (void)destination;
+
+                    // "If ucoeff != 0, the decoder decreases non_zeros by 1."
+                    if (ucoeff != 0)
+                        non_zeros -= 1;
+                    // "If non_zeros reaches 0, the decoder stops decoding further coefficients for the current block."
+                    if (non_zeros == 0)
+                        break;
+                }
+            }
+        }
+    }
+
+    TRY(decoder.ensure_end_state());
+
+    return {};
+}
+
+// G.4.1 - General
 static ErrorOr<void> read_pass_group(LittleEndianInputBitStream& stream,
     PassGroupOptions&& options,
-    PassGroupModularOptions&& modular_options)
+    PassGroupModularOptions&& modular_options,
+    PassGroupVarDCTOptions&& var_dct_options)
 {
-    if (options.frame_header.encoding == Encoding::kVarDCT) {
-        (void)stream;
-        TODO();
-    }
+    if (options.frame_header.encoding == Encoding::kVarDCT)
+        TRY(read_hf_coefficients(stream, options, move(var_dct_options)));
 
     TRY(read_modular_group_data(stream, options, modular_options));
 
@@ -2355,12 +2839,14 @@ struct Frame {
     FrameHeader frame_header;
     TOC toc;
     LfGlobal lf_global;
+    Vector<Optional<VarDCTLfGroup>> lf_groups;
+    HfGlobal hf_global;
 
     u64 width {};
     u64 height {};
 
-    u64 num_groups {};
-    u64 num_lf_groups {};
+    u32 num_groups {};
+    u32 num_lf_groups {};
 
     Optional<Image> image {};
 };
@@ -2379,13 +2865,6 @@ public:
             dbgln("JPEGXLLoader: Corrupted stream, reached EOF");
     }
 };
-
-static LittleEndianInputBitStream get_stream_for_section(LittleEndianInputBitStream& stream, u32 section_size)
-{
-    VERIFY(stream.align_to_byte_boundary() == 0);
-    auto constrained_stream = make<AutoDepletingConstrainedStream>(MaybeOwned<Stream>(stream), section_size);
-    return LittleEndianInputBitStream(move(constrained_stream));
-}
 
 static ErrorOr<Frame> read_frame(LittleEndianInputBitStream& stream,
     SizeHeader const& size_header,
@@ -2408,8 +2887,15 @@ static ErrorOr<Frame> read_frame(LittleEndianInputBitStream& stream,
     }
 
     if (frame.frame_header.upsampling > 1) {
-        frame.width = ceil(static_cast<double>(frame.width) / frame.frame_header.upsampling);
-        frame.height = ceil(static_cast<double>(frame.height) / frame.frame_header.upsampling);
+        frame.width = ceil_div(frame.width, frame.frame_header.upsampling);
+        frame.height = ceil_div(frame.height, frame.frame_header.upsampling);
+    }
+
+    // "If lf_level > 0 (which is also a field in frame_header), then
+    // width = ceil(width / (1 << (3 * lf_level))) and height = ceil(height / (1 << (3 * lf_level)))."
+    if (frame.frame_header.lf_level > 0) {
+        frame.width = ceil_div(frame.width, 1u << (3 * frame.frame_header.lf_level));
+        frame.height = ceil_div(frame.height, 1u << (3 * frame.frame_header.lf_level));
     }
 
     dbgln_if(JPEGXL_DEBUG, "Frame{}: {}x{} {} - {} - flags({}){}"sv,
@@ -2419,9 +2905,6 @@ static ErrorOr<Frame> read_frame(LittleEndianInputBitStream& stream,
         frame.frame_header.frame_type,
         to_underlying(frame.frame_header.flags),
         frame.frame_header.is_last ? " - is_last"sv : ""sv);
-
-    if (frame.frame_header.lf_level > 0)
-        TODO();
 
     auto const group_dim = frame.frame_header.group_dim();
     auto const frame_width = static_cast<double>(frame.width);
@@ -2438,57 +2921,70 @@ static ErrorOr<Frame> read_frame(LittleEndianInputBitStream& stream,
     }
 
     auto bits_per_sample = metadata.bit_depth.bits_per_sample;
+    IntSize frame_size { frame.width, frame.height };
 
-    // "If num_groups == 1 and num_passes == 1, then there is a single TOC entry and a single section
-    // containing all frame data structures."
-    if (frame.num_groups == 1 && frame.frame_header.passes.num_passes == 1) {
-        auto section_stream = get_stream_for_section(stream, frame.toc.entries[0]);
-        frame.lf_global = TRY(read_lf_global(section_stream, { frame.width, frame.height }, frame.frame_header, metadata));
-        TRY(read_lf_group(section_stream, frame.lf_global.gmodular.modular_data.channels, frame.frame_header));
+    auto get_stream_for_section = [&](LittleEndianInputBitStream& stream, u32 section_index) -> ErrorOr<MaybeOwned<LittleEndianInputBitStream>> {
+        // "If num_groups == 1 and num_passes == 1, then there is a single TOC entry and a single section
+        // containing all frame data structures."
+        if (frame.num_groups == 1 && frame.frame_header.passes.num_passes == 1)
+            return MaybeOwned(stream);
+        auto section_size = frame.toc.entries[section_index];
+        if (stream.align_to_byte_boundary() != 0)
+            return Error::from_string_literal("JPEGXLLoader: Padding bits between sections must all be zeros");
+        auto constrained_stream = make<AutoDepletingConstrainedStream>(MaybeOwned<Stream>(stream), section_size);
+        return TRY(try_make<LittleEndianInputBitStream>(move(constrained_stream)));
+    };
 
-        // From H.4.1, ModularGroup: 1 + 3 * num_lf_groups + 17 + num_groups * pass index + group index
-        u32 stream_index = 1 + 3 * frame.num_lf_groups + 17;
-        TRY(read_pass_group(section_stream,
+    {
+        auto lf_stream = TRY(get_stream_for_section(stream, 0));
+        frame.lf_global = TRY(read_lf_global(*lf_stream, frame_size, frame.frame_header, metadata));
+    }
+
+    for (u32 i {}; i < frame.num_lf_groups; ++i) {
+        auto lf_stream = TRY(get_stream_for_section(stream, 1 + i));
+        // From H.4.1, "The stream index is defined as follows: [...] for ModularLfGroup: 1 + num_lf_groups + LF group index;"
+        TRY(read_lf_group(*lf_stream,
             {
                 .global_modular = frame.lf_global.gmodular,
                 .frame_header = frame.frame_header,
-                .group_index = 0,
-                .pass_index = 0,
-                .stream_index = stream_index,
+                .group_index = i,
+                .stream_index = 1 + frame.num_lf_groups + i,
+                .bit_depth = bits_per_sample,
             },
-            { .bit_depth = bits_per_sample }));
-    } else {
-        {
-            auto lf_stream = get_stream_for_section(stream, frame.toc.entries[0]);
-            frame.lf_global = TRY(read_lf_global(lf_stream, { frame.width, frame.height }, frame.frame_header, metadata));
-        }
+            {
+                .group_data = frame.lf_groups,
+                .frame_size = frame_size,
+                .num_lf_group = frame.num_lf_groups,
+            }));
+    }
 
-        for (u32 i {}; i < frame.num_lf_groups; ++i) {
-            auto lf_stream = get_stream_for_section(stream, frame.toc.entries[1 + i]);
-            TRY(read_lf_group(lf_stream, frame.lf_global.gmodular.modular_data.channels, frame.frame_header));
-        }
+    {
+        auto hf_global_stream = TRY(get_stream_for_section(stream, 1 + frame.num_lf_groups));
+        if (frame.frame_header.encoding == Encoding::kVarDCT)
+            frame.hf_global = TRY(read_hf_global(stream, frame.lf_global, frame.num_groups, frame.frame_header.passes.num_passes));
+    }
 
-        if (frame.frame_header.encoding == Encoding::kVarDCT) {
-            TODO();
-        }
+    for (u32 pass_index {}; pass_index < frame.frame_header.passes.num_passes; ++pass_index) {
+        for (u32 group_index {}; group_index < frame.num_groups; ++group_index) {
+            auto toc_section_number = 2 + frame.num_lf_groups + pass_index * frame.num_groups + group_index;
+            auto pass_stream = TRY(get_stream_for_section(stream, toc_section_number));
 
-        for (u32 pass_index {}; pass_index < frame.frame_header.passes.num_passes; ++pass_index) {
-            for (u32 group_index {}; group_index < frame.num_groups; ++group_index) {
-                auto toc_section_number = 2 + frame.num_lf_groups + pass_index * frame.num_groups + group_index;
-                auto pass_stream = get_stream_for_section(stream, frame.toc.entries[toc_section_number]);
-
-                // From H.4.1, ModularGroup: 1 + 3 * num_lf_groups + 17 + num_groups * pass index + group index
-                u32 stream_index = 1 + 3 * frame.num_lf_groups + 17 + frame.num_groups * pass_index + group_index;
-                TRY(read_pass_group(pass_stream,
-                    {
-                        .global_modular = frame.lf_global.gmodular,
-                        .frame_header = frame.frame_header,
-                        .group_index = group_index,
-                        .pass_index = pass_index,
-                        .stream_index = stream_index,
-                    },
-                    { .bit_depth = bits_per_sample }));
-            }
+            // From H.4.1, ModularGroup: 1 + 3 * num_lf_groups + 17 + num_groups * pass index + group index
+            u32 stream_index = 1 + 3 * frame.num_lf_groups + 17 + frame.num_groups * pass_index + group_index;
+            TRY(read_pass_group(*pass_stream,
+                {
+                    .global_modular = frame.lf_global.gmodular,
+                    .frame_header = frame.frame_header,
+                    .group_index = group_index,
+                    .pass_index = pass_index,
+                    .stream_index = stream_index,
+                },
+                { .bit_depth = bits_per_sample },
+                {
+                    .lf_global = frame.lf_global,
+                    .lf_groups = frame.lf_groups,
+                    .hf_global = frame.hf_global,
+                }));
         }
     }
 
@@ -2500,31 +2996,284 @@ static ErrorOr<Frame> read_frame(LittleEndianInputBitStream& stream,
     for (auto const& transformation : transform_infos.in_reverse())
         TRY(apply_transformation(channels, transformation, bits_per_sample, frame.lf_global.gmodular.modular_data.wp_params));
 
+    if (frame.frame_header.encoding == Encoding::kVarDCT) {
+        channels.prepend(TRY(Channel::create(ChannelInfo::from_size(frame_size))));
+        channels.prepend(TRY(Channel::create(ChannelInfo::from_size(frame_size))));
+        channels.prepend(TRY(Channel::create(ChannelInfo::from_size(frame_size))));
+    }
+
     frame.image = TRY(Image::adopt_channels(move(channels)));
 
     return frame;
 }
 ///
 
-/// 5.2 - Mirroring
-static u32 mirror_1d(i32 coord, u32 size)
-{
-    if (coord < 0)
-        return mirror_1d(-coord - 1, size);
-    else if (static_cast<u32>(coord) >= size)
-        return mirror_1d(2 * size - 1 - coord, size);
-    else
-        return coord;
-}
-///
-
 /// J - Restoration filters
-// J.1  General
-static ErrorOr<void> apply_restoration_filters(Frame& frame)
+
+// J.3  Gabor-like transform
+using GaborWeights = Array<float, 2>;
+
+static FloatMatrix3x3 construct_gabor_like_filter(GaborWeights weights)
+{
+    FloatMatrix3x3 filter {};
+
+    // "the unnormalized weight for the center is 1"
+    filter(1, 1) = 1;
+
+    // "its four neighbours (top, bottom, left, right) are restoration_filter.gab_C_weight1"
+    filter(0, 1) = weights[0];
+    filter(1, 0) = weights[0];
+    filter(1, 2) = weights[0];
+    filter(2, 1) = weights[0];
+
+    // "and the four corners (top-left, top-right, bottom-left, bottom-right) are restoration_filter.gab_C_weight2."
+    filter(0, 0) = weights[1];
+    filter(0, 2) = weights[1];
+    filter(2, 0) = weights[1];
+    filter(2, 2) = weights[1];
+
+    // These weights are rescaled uniformly before convolution, such that the nine kernel weights sum to 1.
+    return filter / filter.element_sum();
+}
+
+static FloatMatrix3x3 extract_matrix_from_channel(FloatChannel const& channel, u32 x, u32 y)
+{
+    FloatMatrix3x3 m;
+    auto x_minus_1 = x == 0 ? mirror_1d(x, channel.width()) : x - 1;
+    auto x_plus_1 = x == channel.width() - 1 ? mirror_1d(x, channel.width()) : x + 1;
+
+    auto y_minus_1 = y == 0 ? mirror_1d(y, channel.height()) : y - 1;
+    auto y_plus_1 = y == channel.height() - 1 ? mirror_1d(y, channel.height()) : y + 1;
+
+    m(0, 0) = channel.get(x_minus_1, y_minus_1);
+    m(0, 1) = channel.get(x, y_minus_1);
+    m(0, 2) = channel.get(x_plus_1, y_minus_1);
+    m(1, 0) = channel.get(x_minus_1, y);
+    m(1, 1) = channel.get(x, y);
+    m(1, 2) = channel.get(x_plus_1, y);
+    m(2, 0) = channel.get(x_minus_1, y_plus_1);
+    m(2, 1) = channel.get(x, y_plus_1);
+    m(2, 2) = channel.get(x_plus_1, y_plus_1);
+
+    return m;
+}
+
+static ErrorOr<void> apply_gabor_like_on_channel(FloatChannel& channel, GaborWeights weights)
+{
+    auto filter = construct_gabor_like_filter(weights);
+    auto out = TRY(channel.copy());
+    for (u32 y = 0; y < channel.height(); ++y) {
+        for (u32 x = 0; x < channel.width(); ++x) {
+            auto source = extract_matrix_from_channel(channel, x, y);
+            auto result = source.hadamard_product(filter).element_sum();
+            out.set(x, y, result);
+        }
+    }
+    channel = move(out);
+    return {};
+}
+
+static ErrorOr<void> apply_gabor_like_filter(RestorationFilter const& restoration_filter, Span<FloatChannel> channels)
+{
+    VERIFY(channels.size() == 3);
+
+    Array<GaborWeights, 3> weights {
+        GaborWeights { restoration_filter.gab_x_weight1, restoration_filter.gab_x_weight2 },
+        GaborWeights { restoration_filter.gab_y_weight1, restoration_filter.gab_y_weight2 },
+        GaborWeights { restoration_filter.gab_b_weight1, restoration_filter.gab_b_weight2 },
+    };
+    for (auto [i, channel] : enumerate(channels))
+        TRY(apply_gabor_like_on_channel(channel, weights[i]));
+    return {};
+}
+
+// J.4 - Edge-preserving filter
+
+// J.4.2 - Distances
+static f32 DistanceStep0and1(RestorationFilter const& rf, Span<FloatChannel const> input, u32 x, u32 y, i8 cx, i8 cy)
+{
+    f32 dist = 0;
+    auto coords = to_array<IntPoint>({ { 0, 0 }, { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } });
+    for (u8 c = 0; c < 3; c++) {
+        for (auto coord : coords) {
+            auto ix = coord.x();
+            auto iy = coord.y();
+            dist += abs(input[c].get_mirrored(x + ix, y + iy) - input[c].get_mirrored(x + cx + ix, y + cy + iy)) * rf.epf_channel_scale[c];
+        }
+    }
+    return dist;
+}
+
+static f32 DistanceStep2(RestorationFilter const& rf, Span<FloatChannel const> input, u32 x, u32 y, i8 cx, i8 cy)
+{
+    f32 dist = 0;
+    for (u8 c = 0; c < 3; c++) {
+        dist += abs(input[c].get_mirrored(x, y) - input[c].get_mirrored(x + cx, y + cy)) * rf.epf_channel_scale[c];
+    }
+    return dist;
+}
+
+// J.4.3 - Weights
+static f32 Weight(RestorationFilter const& rf, f32 step, f32 distance, f32 sigma, u32 x, u32 y)
+{
+    // "step = /* 0 if first step, 1 if second step, 2 if third step */;"
+    Array<f32, 3> step_multiplier = { 1.65f * rf.epf_pass0_sigma_scale, 1.65f * 1, 1.65f * rf.epf_pass2_sigma_scale };
+    f32 position_multiplier {};
+    // "either coordinate of the reference sample is 0 or 7 UMod 8."
+    if (x % 8 == 0 || x % 8 == 7 || y % 8 == 0 || y % 8 == 7)
+        position_multiplier = rf.epf_border_sad_mul;
+    else
+        position_multiplier = 1;
+    f32 inv_sigma = step_multiplier[step] * 4 * (1 - sqrt(0.5f)) / sigma;
+    f32 scaled_distance = position_multiplier * distance;
+    f32 v = 1 - scaled_distance * inv_sigma;
+    if (v <= 0)
+        return 0;
+    return v;
+}
+
+// J.4.4 - Weighted average
+static void apply_epf_step_on_pixel(RestorationFilter const& rf, Span<FloatChannel const> input, Span<FloatChannel> output, u32 step, f32 sigma, u32 x, u32 y)
+{
+    auto kernel_coords = [&]() {
+        if (step == 0) {
+            static constexpr Array points = to_array<IntPoint>({ { 0, 0 }, { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 },
+                { 1, -1 }, { 1, 1 }, { -1, 1 }, { -1, -1 }, { -2, 0 },
+                { 2, 0 }, { 0, 2 }, { 0, -2 } });
+            return points.span();
+        }
+        static constexpr Array points = to_array<IntPoint>({ { 0, 0 }, { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } });
+        return points.span();
+    }();
+
+    f32 sum_weights = 0;
+    Array<f32, 3> sum_channels = { 0, 0, 0 };
+    for (auto coord : kernel_coords) {
+        auto ix = coord.x();
+        auto iy = coord.y();
+        f32 distance {};
+        if (step == 0 || step == 1) {
+            distance = DistanceStep0and1(rf, input, x, y, ix, iy);
+        } else {
+            distance = DistanceStep2(rf, input, x, y, ix, iy);
+        }
+        f32 weight = Weight(rf, step, distance, sigma, x, y);
+        sum_weights += weight;
+        for (u8 c = 0; c < 3; c++) {
+            sum_channels[c] += input[c].get_mirrored(x + ix, y + iy) * weight;
+        }
+    }
+    for (u8 c = 0; c < 3; c++) {
+        output[c].set(x, y, sum_channels[c] / sum_weights);
+    }
+}
+
+// J.4.1 - General
+static void apply_epf_step(RestorationFilter const& rf, Span<FloatChannel const> input, Span<FloatChannel> output, u32 step, f32 sigma)
+{
+    for (u64 y = 0; y < input[0].height(); ++y) {
+        for (u64 x = 0; x < input[0].width(); ++x)
+            apply_epf_step_on_pixel(rf, input, output, step, sigma, x, y);
+    }
+}
+
+static ErrorOr<void> apply_epf_filter(FrameHeader const& frame_header, Span<FloatChannel> channels)
+{
+    // "sigma is then computed as specified by the following code if the frame encoding is kVarDCT, else it is set to rf.epf_sigma_for_modular."
+    if (frame_header.encoding == Encoding::kVarDCT)
+        return Error::from_string_literal("FIXME: Compute epf's sigma for VarDCT frames.");
+    f32 sigma = frame_header.restoration_filter.epf_sigma_for_modular;
+
+    // "The output of each step is used as an input for the following step."
+    Vector<FloatChannel> next_input;
+    for (u8 i = 0; i < channels.size(); ++i)
+        TRY(next_input.try_append(TRY(channels[i].copy())));
+
+    // "The first step is only done if rf.epf_iters == 3."
+    if (frame_header.restoration_filter.epf_iters == 3) {
+        apply_epf_step(frame_header.restoration_filter, next_input, channels, 0, sigma);
+        next_input.clear();
+        for (u8 i = 0; i < channels.size(); ++i)
+            TRY(next_input.try_append(TRY(channels[i].copy())));
+    }
+
+    // "The second step is always done (if rf.epf_iters > 0)."
+    if (frame_header.restoration_filter.epf_iters > 0) {
+        apply_epf_step(frame_header.restoration_filter, next_input, channels, 1, sigma);
+        next_input.clear();
+        for (u8 i = 0; i < channels.size(); ++i)
+            TRY(next_input.try_append(TRY(channels[i].copy())));
+    }
+
+    // "The third step is only done if rf.epf_iters >= 2."
+    if (frame_header.restoration_filter.epf_iters >= 2)
+        apply_epf_step(frame_header.restoration_filter, next_input, channels, 2, sigma);
+
+    return {};
+}
+
+struct SplitChannels {
+    Vector<FloatChannel> color_channels {};
+    Vector<Channel> extra_channels {};
+};
+
+template<typename T2, typename T1>
+static ErrorOr<Vector<Detail::Channel<T2>>> convert_channels(Span<Detail::Channel<T1>> const& channels, u8 bits_per_sample)
+{
+    Vector<Detail::Channel<T2>> new_channels;
+    TRY(new_channels.try_ensure_capacity(channels.size()));
+    for (u32 i = 0; i < channels.size(); ++i)
+        new_channels.append(TRY(channels[i].template as<T2>(bits_per_sample)));
+    return new_channels;
+}
+
+static ErrorOr<SplitChannels> extract_color_channels(ImageMetadata const& metadata, Image& image)
+{
+    auto all_channels = move(image.channels());
+    auto f32_color_channels = TRY(convert_channels<f32>(all_channels.span().trim(metadata.number_of_color_channels()), metadata.bit_depth.bits_per_sample));
+    all_channels.remove(0, metadata.number_of_color_channels());
+    return SplitChannels { move(f32_color_channels), move(all_channels) };
+}
+
+static ErrorOr<void> ensure_enough_color_channels(Vector<FloatChannel>& channels)
+{
+    if (channels.size() == 3)
+        return {};
+    VERIFY(channels.size() == 1);
+    TRY(channels.try_append(TRY(channels[0].copy())));
+    TRY(channels.try_append(TRY(channels[0].copy())));
+    return {};
+}
+
+// J.1 - General
+static ErrorOr<void> apply_restoration_filters(Frame& frame, ImageMetadata const& metadata)
 {
     auto const& frame_header = frame.frame_header;
-    if (frame_header.restoration_filter.gab || frame_header.restoration_filter.epf_iters != 0)
-        dbgln("JPEGXLLoader: FIXME: Apply restoration filters");
+
+    if (frame_header.restoration_filter.gab || frame_header.restoration_filter.epf_iters != 0) {
+        if constexpr (JPEGXL_DEBUG) {
+            dbgln("Restoration filters:");
+            dbgln(" * Gab: {}", frame_header.restoration_filter.gab);
+            dbgln(" * EPF: {}", frame_header.restoration_filter.epf_iters);
+        }
+
+        // FIXME: Clarify where we should actually do the i32 -> f32 convertion.
+        auto channels = TRY(extract_color_channels(metadata, *frame.image));
+        TRY(ensure_enough_color_channels(channels.color_channels));
+
+        if (frame_header.restoration_filter.gab)
+            TRY(apply_gabor_like_filter(frame.frame_header.restoration_filter, channels.color_channels));
+        if (frame_header.restoration_filter.epf_iters != 0)
+            TRY(apply_epf_filter(frame_header, channels.color_channels));
+
+        // Remove unwanted color channels if the image is greyscale.
+        if (metadata.number_of_color_channels() == 1)
+            channels.color_channels.remove(1, 2);
+        auto i32_channels = TRY(convert_channels<i32>(channels.color_channels.span(), metadata.bit_depth.bits_per_sample));
+        TRY(i32_channels.try_extend(move(channels.extra_channels)));
+        frame.image = TRY(Image::adopt_channels(move(i32_channels)));
+    }
+
     return {};
 }
 ///
@@ -2575,10 +3324,7 @@ static ErrorOr<void> apply_upsampling(Frame& frame, ImageMetadata const& metadat
                                     auto const maximum = max(i, j);
                                     auto const index = 5 * k * minimum / 2 - minimum * (minimum - 1) / 2 + maximum - minimum;
 
-                                    auto const origin_sample_x = mirror_1d(x + ix - 2, channel.width());
-                                    auto const origin_sample_y = mirror_1d(y + iy - 2, channel.height());
-
-                                    auto const origin_sample = channel.get(origin_sample_x, origin_sample_y);
+                                    auto const origin_sample = channel.get_mirrored(x + ix - 2, y + iy - 2);
 
                                     W_min = min(W_min, origin_sample);
                                     W_max = max(W_max, origin_sample);
@@ -2603,18 +3349,46 @@ static ErrorOr<void> apply_upsampling(Frame& frame, ImageMetadata const& metadat
     return {};
 }
 
-static ErrorOr<void> apply_image_features(Frame& frame, ImageMetadata const& metadata)
+/// K.3.2  Patches rendering
+static ErrorOr<void> apply_patches(Span<Frame> previous_frames, Frame& frame)
+{
+    auto& destination_image = frame.image;
+    for (auto const& [i, patch] : enumerate(frame.lf_global.patches)) {
+        if (patch.ref > previous_frames.size())
+            return Error::from_string_literal("JPEGXLLoader: Unable to find the requested reference frame");
+
+        auto& source_image = previous_frames[patch.ref].image;
+        auto source_rect = IntRect({ patch.x0, patch.y0 }, { patch.width, patch.height });
+        auto source_patch = TRY(source_image->get_subimage(source_rect));
+
+        for (u32 j = 0; j < patch.count; ++j) {
+            auto destination = IntRect(patch.positions[j], { patch.width, patch.height });
+            auto destination_patch = TRY(destination_image->get_subimage(destination));
+            // FIXME: "iterates over the three colour channels if c == 0 and refers to the extra channel with index c−1 otherwise"
+            TRY(source_patch.blend_into(destination_patch, patch.blending[j][0].mode));
+        }
+    }
+
+    return {};
+}
+
+static ErrorOr<void> apply_image_features(Span<Frame> previous_frames, Frame& frame, ImageMetadata const& metadata)
 {
     TRY(apply_upsampling(frame, metadata));
 
-    if (frame.frame_header.flags != FrameHeader::Flags::None)
-        TODO();
+    auto flags = frame.frame_header.flags;
+    if (flags & FrameHeader::Flags::kPatches) {
+        TRY(apply_patches(previous_frames, frame));
+    } else if (flags != FrameHeader::Flags::None) {
+        dbgln("JPEGXLLoader: Unsupported image features");
+    }
     return {};
 }
 ///
 
 /// L.2 - XYB + L.3 - YCbCr
-static void ycbcr_to_rgb(Image& image, u8 bits_per_sample)
+template<typename F>
+static void for_each_pixel_of_color_channels(Image& image, F color_conversion)
 {
     auto& channels = image.channels();
     VERIFY(channels.size() >= 3);
@@ -2622,18 +3396,78 @@ static void ycbcr_to_rgb(Image& image, u8 bits_per_sample)
     VERIFY(channels[0].width() == channels[1].width() && channels[1].width() == channels[2].width());
     VERIFY(channels[0].height() == channels[1].height() && channels[1].height() == channels[2].height());
 
-    auto const half_range_offset = (1 << bits_per_sample) / 2;
     for (u32 y = 0; y < channels[0].height(); ++y) {
         for (u32 x = 0; x < channels[0].width(); ++x) {
-            auto const cb = channels[0].get(x, y);
-            auto const luma = channels[1].get(x, y);
-            auto const cr = channels[2].get(x, y);
-
-            channels[0].set(x, y, luma + half_range_offset + 1.402 * cr);
-            channels[1].set(x, y, luma + half_range_offset - 0.344136 * cb - 0.714136 * cr);
-            channels[2].set(x, y, luma + half_range_offset + 1.772 * cb);
+            color_conversion(channels[0].get(x, y), channels[1].get(x, y), channels[2].get(x, y));
         }
     }
+}
+
+static void ycbcr_to_rgb(Image& image, u8 bits_per_sample)
+{
+    auto const half_range_offset = (1 << bits_per_sample) / 2;
+    auto color_conversion = [half_range_offset](i32& c1, i32& c2, i32& c3) {
+        auto const cb = c1;
+        auto const luma = c2;
+        auto const cr = c3;
+
+        c1 = luma + half_range_offset + 1.402 * cr;
+        c2 = luma + half_range_offset - 0.344136 * cb - 0.714136 * cr;
+        c3 = luma + half_range_offset + 1.772 * cb;
+    };
+
+    for_each_pixel_of_color_channels(image, move(color_conversion));
+}
+
+// L.2.2  Inverse XYB transform
+static void xyb_to_rgb(Frame& frame, ImageMetadata const& metadata)
+{
+    // "X, Y, B samples are converted to an RGB colour encoding as specified in this subclause,
+    // in which oim denotes metadata.opsin_inverse_matrix."
+    auto const& oim = metadata.opsin_inverse_matrix;
+    f32 to_int = (1 << metadata.bit_depth.bits_per_sample) - 1;
+    auto linear_to_srgb = [](f32 c) {
+        return c >= 0.0031308f ? 1.055f * pow(c, 0.4166666f) - 0.055f : 12.92f * c;
+    };
+    auto color_conversion = [&](i32& c1, i32& c2, i32& c3) {
+        f32 const y_ = c1;
+        f32 const x_ = c2;
+        f32 const b_ = c3;
+
+        f32 y {}, x {}, b {};
+        if (frame.frame_header.encoding == Encoding::kModular) {
+            y = y_ * frame.lf_global.lf_dequant.m_y_lf_unscaled;
+            x = x_ * frame.lf_global.lf_dequant.m_x_lf_unscaled;
+            b = (b_ + y_) * frame.lf_global.lf_dequant.m_b_lf_unscaled;
+        } else {
+            y = y_;
+            x = x_;
+            b = b_;
+        }
+
+        f32 Lgamma = y + x;
+        f32 Mgamma = y - x;
+        f32 Sgamma = b;
+        f32 itscale = 255 / metadata.tone_mapping.intensity_target;
+        f32 Lmix = (powf(Lgamma - cbrt(oim.opsin_bias0), 3) + oim.opsin_bias0) * itscale;
+        f32 Mmix = (powf(Mgamma - cbrt(oim.opsin_bias1), 3) + oim.opsin_bias1) * itscale;
+        f32 Smix = (powf(Sgamma - cbrt(oim.opsin_bias2), 3) + oim.opsin_bias2) * itscale;
+        f32 R = oim.inv_mat00 * Lmix + oim.inv_mat01 * Mmix + oim.inv_mat02 * Smix;
+        f32 G = oim.inv_mat10 * Lmix + oim.inv_mat11 * Mmix + oim.inv_mat12 * Smix;
+        f32 B = oim.inv_mat20 * Lmix + oim.inv_mat21 * Mmix + oim.inv_mat22 * Smix;
+
+        // "The resulting RGB samples correspond to sRGB primaries and a D65 white point, and the transfer function is linear."
+        // We assume sRGB everywhere, so let's apply the transfer function here.
+        R = linear_to_srgb(R);
+        G = linear_to_srgb(G);
+        B = linear_to_srgb(B);
+
+        c1 = round_to<i32>(R * to_int);
+        c2 = round_to<i32>(G * to_int);
+        c3 = round_to<i32>(B * to_int);
+    };
+
+    for_each_pixel_of_color_channels(*frame.image, move(color_conversion));
 }
 
 static void apply_colour_transformation(Frame& frame, ImageMetadata const& metadata)
@@ -2642,7 +3476,7 @@ static void apply_colour_transformation(Frame& frame, ImageMetadata const& metad
         ycbcr_to_rgb(*frame.image, metadata.bit_depth.bits_per_sample);
 
     if (metadata.xyb_encoded) {
-        TODO();
+        xyb_to_rgb(frame, metadata);
     } else {
         // FIXME: Do a proper color transformation with metadata.colour_encoding
     }
@@ -2662,9 +3496,9 @@ static ErrorOr<void> render_extra_channels(Image&, ImageMetadata const& metadata
 }
 ///
 
-class JPEGXLLoadingContext {
+class LoadingContext {
 public:
-    JPEGXLLoadingContext(NonnullOwnPtr<Stream> stream)
+    LoadingContext(NonnullOwnPtr<Stream> stream)
         : m_stream(move(stream))
     {
     }
@@ -2680,8 +3514,9 @@ public:
         m_header = TRY(read_size_header(m_stream));
         m_metadata = TRY(read_metadata_header(m_stream));
 
-        dbgln_if(JPEGXL_DEBUG, "Decoding a JPEG XL image with size {}x{} and {} channels, bit-depth={}.",
-            m_header.width, m_header.height, m_metadata.number_of_channels(), m_metadata.bit_depth.bits_per_sample);
+        dbgln_if(JPEGXL_DEBUG, "Decoding a JPEG XL image with size {}x{} and {} channels, bit-depth={}{}.",
+            m_header.width, m_header.height, m_metadata.number_of_channels(), m_metadata.bit_depth.bits_per_sample,
+            m_metadata.colour_encoding.want_icc ? ", icc_profile"sv : ""sv);
 
         m_state = State::HeaderDecoded;
 
@@ -2701,9 +3536,16 @@ public:
         auto frame = TRY(read_frame(m_stream, m_header, m_metadata));
         auto const& frame_header = frame.frame_header;
 
-        TRY(apply_restoration_filters(frame));
+        TRY(apply_restoration_filters(frame, m_metadata));
 
-        TRY(apply_image_features(frame, m_metadata));
+        TRY(apply_image_features(m_frames, frame, m_metadata));
+
+        // "If lf_level != 0, the samples of the frame (before any colour transform is applied)
+        // are recorded as LFFrame[lf_level−1] and may be referenced by subsequent frames."
+        if (frame.frame_header.lf_level != 0) {
+            m_lf_frames[frame.frame_header.lf_level - 1] = move(frame);
+            return {};
+        }
 
         if (!frame_header.save_before_ct) {
             apply_colour_transformation(frame, m_metadata);
@@ -2728,18 +3570,10 @@ public:
             if (m_metadata.preview.has_value())
                 TODO();
 
-            TRY(decode_frame());
-
-            while (!m_frames.last().frame_header.is_last)
+            while (m_frames.is_empty() || !m_frames.last().frame_header.is_last)
                 TRY(decode_frame());
 
-            if (!m_image.has_value())
-                m_image = TRY(Image::create({ m_header.width, m_header.height }, m_metadata));
-
-            m_frames.last().image->blend_into(*m_image, m_frames.last().frame_header);
-
-            m_bitmap = TRY(m_image->to_bitmap(m_metadata));
-            m_image.clear();
+            TRY(render_frame());
 
             return {};
         }();
@@ -2772,22 +3606,61 @@ public:
         return m_bitmap;
     }
 
+    RefPtr<CMYKBitmap> cmyk_bitmap() const
+    {
+        return m_cmyk_bitmap;
+    }
+
     ByteBuffer const& icc_profile() const
     {
         return m_icc_profile;
     }
 
+    bool is_cmyk() const
+    {
+        return any_of(m_metadata.ec_info, [](auto& info) { return info.type == ExtraChannelInfo::ExtraChannelType::kBlack; });
+    }
+
 private:
+    ErrorOr<void> render_frame()
+    {
+        auto final_image = TRY(Image::create({ m_header.width, m_header.height }, m_metadata));
+
+        for (auto& frame : m_frames) {
+            if (frame.frame_header.frame_type != FrameHeader::FrameType::kRegularFrame)
+                continue;
+
+            auto blending_mode = frame.frame_header.blending_info.mode;
+
+            // "If x0 or y0 is negative, or the frame extends beyond the right or bottom
+            // edge of the image, only the intersection of the frame with the image is
+            // updated and contributes to the decoded image."
+            IntRect frame_rect = frame.image->rect();
+            auto image_rect = IntRect::intersection(frame_rect.translated(IntPoint { frame.frame_header.x0, frame.frame_header.y0 }), final_image.rect());
+            frame_rect.set_x(-min(frame.frame_header.x0, 0));
+            frame_rect.set_y(-min(frame.frame_header.y0, 0));
+            frame_rect.set_size(image_rect.size());
+
+            auto frame_out = TRY(frame.image->get_subimage(frame_rect));
+            auto image_out = TRY(final_image.get_subimage(image_rect));
+            TRY(frame_out.blend_into(image_out, blending_mode));
+        }
+
+        if (is_cmyk())
+            m_cmyk_bitmap = TRY(final_image.to_cmyk_bitmap(m_metadata));
+        else
+            m_bitmap = TRY(final_image.to_bitmap(m_metadata));
+        return {};
+    }
+
     State m_state { State::NotDecoded };
 
     LittleEndianInputBitStream m_stream;
     RefPtr<Gfx::Bitmap> m_bitmap;
-
-    // JPEG XL images can be composed of multiples sub-images, this variable is an internal
-    // representation of this blending before the final rendering (in m_bitmap)
-    Optional<Image> m_image;
+    RefPtr<Gfx::CMYKBitmap> m_cmyk_bitmap;
 
     Vector<Frame> m_frames;
+    Array<Optional<Frame>, 4> m_lf_frames;
 
     SizeHeader m_header;
     ImageMetadata m_metadata;
@@ -2795,8 +3668,12 @@ private:
     ByteBuffer m_icc_profile;
 };
 
+}
+
+namespace Gfx {
+
 JPEGXLImageDecoderPlugin::JPEGXLImageDecoderPlugin(Optional<Vector<u8>>&& jxlc_content, NonnullOwnPtr<FixedMemoryStream> stream)
-    : m_context(make<JPEGXLLoadingContext>(move(stream)))
+    : m_context(make<JPEGXL::LoadingContext>(move(stream)))
     , m_jxlc_content(move(jxlc_content))
 {
 }
@@ -2832,14 +3709,55 @@ static ErrorOr<Vector<u8>> extract_codestream_from_container(NonnullOwnPtr<Fixed
     auto box_reader = TRY(ISOBMFF::Reader::create(move(input)));
     auto box_list = TRY(box_reader.read_entire_file());
 
+    size_t jxlc_box_count = 0;
+    size_t jxlp_box_count = 0;
     for (auto& box : box_list) {
-        if (box->box_type() == ISOBMFF::BoxType::JPEGXLCodestreamBox) {
-            auto& codestream_box = *reinterpret_cast<ISOBMFF::JPEGXLCodestreamBox*>(box.ptr());
-            return move(codestream_box.codestream);
-        }
+        if (box->box_type() == ISOBMFF::BoxType::JPEGXLCodestreamBox)
+            jxlc_box_count++;
+        else if (box->box_type() == ISOBMFF::BoxType::JPEGXLPartialCodestreamBox)
+            jxlp_box_count++;
     }
 
-    return Error::from_string_literal("JPEGXLLoader: No jxlc box found");
+    // "A JPEG XL file shall contain either exactly one JPEG XL codestream box, or one or more JPEG XL partial
+    //  codestream boxes, but not both."
+    if (jxlc_box_count == 0 && jxlp_box_count == 0)
+        return Error::from_string_literal("JPEGXLLoader: No jxlc box and no jxlp boxes found");
+    if (jxlc_box_count > 1)
+        return Error::from_string_literal("JPEGXLLoader: Multiple jxlc boxes found");
+    if (jxlp_box_count > 0 && jxlc_box_count > 0)
+        return Error::from_string_literal("JPEGXLLoader: Both jxlc box and jxlp boxes found");
+
+    if (jxlc_box_count > 0) {
+        auto& box = *box_list.find_if([](auto& box) { return box->box_type() == ISOBMFF::BoxType::JPEGXLCodestreamBox; });
+        auto& codestream_box = static_cast<ISOBMFF::JPEGXLCodestreamBox&>(*box);
+        return move(codestream_box.codestream);
+    }
+
+    // "The index modulo 2^31 shall be 0 for the first partial
+    //  codestream box, and incremented by 1 for each next partial codestream box. The index shall be lower
+    //  than 2^31, except for the last partial codestream box, which shall have an index of at least 2^31. The boxes
+    //  shall appear in the file in order of increasing index. The full concatenation of all partial codestream
+    //  boxes in this order shall form exactly one complete and valid JPEG XL codestream."
+    // FIXME: Try to prevent the extra copy, maybe with a non-contiguous steam class.
+    VERIFY(jxlp_box_count > 0);
+    size_t next_part_index = 0;
+    Vector<u8> codestream;
+    for (auto& box : box_list) {
+        if (box->box_type() != ISOBMFF::BoxType::JPEGXLPartialCodestreamBox)
+            continue;
+        auto& partial_box = static_cast<ISOBMFF::JPEGXLPartialCodestreamBox&>(*box);
+
+        if (partial_box.index() != next_part_index)
+            return Error::from_string_literal("JPEGXLLoader: Partial box indices not sequential");
+        ++next_part_index;
+
+        bool is_last_box = next_part_index == jxlp_box_count;
+        if (partial_box.is_last() != is_last_box)
+            return Error::from_string_literal("JPEGXLLoader: Invalid is_last bit on partial box");
+
+        TRY(codestream.try_extend(partial_box.codestream));
+    }
+    return codestream;
 }
 
 ErrorOr<NonnullOwnPtr<ImageDecoderPlugin>> JPEGXLImageDecoderPlugin::create(ReadonlyBytes data)
@@ -2880,18 +3798,38 @@ ErrorOr<ImageFrameDescriptor> JPEGXLImageDecoderPlugin::frame(size_t index, Opti
     if (index > 0)
         return Error::from_string_literal("JPEGXLImageDecoderPlugin: Invalid frame index");
 
-    if (m_context->state() == JPEGXLLoadingContext::State::Error)
+    if (m_context->state() == JPEGXL::LoadingContext::State::Error)
         return Error::from_string_literal("JPEGXLImageDecoderPlugin: Decoding failed");
 
-    if (m_context->state() < JPEGXLLoadingContext::State::FrameDecoded)
+    if (m_context->state() < JPEGXL::LoadingContext::State::FrameDecoded)
         TRY(m_context->decode());
+
+    if (m_context->cmyk_bitmap() && !m_context->bitmap())
+        return ImageFrameDescriptor { TRY(m_context->cmyk_bitmap()->to_low_quality_rgb()), 0 };
 
     return ImageFrameDescriptor { m_context->bitmap(), 0 };
 }
 
+ErrorOr<NonnullRefPtr<CMYKBitmap>> JPEGXLImageDecoderPlugin::cmyk_frame()
+{
+    if (m_context->state() == JPEGXL::LoadingContext::State::Error)
+        return Error::from_string_literal("JPEGXLImageDecoderPlugin: Decoding failed");
+
+    if (m_context->state() < JPEGXL::LoadingContext::State::FrameDecoded)
+        TRY(m_context->decode());
+
+    VERIFY(m_context->cmyk_bitmap() && !m_context->bitmap());
+    return *m_context->cmyk_bitmap();
+}
+
+NaturalFrameFormat JPEGXLImageDecoderPlugin::natural_frame_format() const
+{
+    return m_context->is_cmyk() ? NaturalFrameFormat::CMYK : NaturalFrameFormat::RGB;
+}
+
 ErrorOr<Optional<ReadonlyBytes>> JPEGXLImageDecoderPlugin::icc_data()
 {
-    if (m_context->state() < JPEGXLLoadingContext::State::ICCProfileDecoded)
+    if (m_context->state() < JPEGXL::LoadingContext::State::ICCProfileDecoded)
         TRY(m_context->decode_icc());
     if (m_context->icc_profile().size() == 0)
         return OptionalNone {};
@@ -2903,15 +3841,15 @@ ErrorOr<Optional<ReadonlyBytes>> JPEGXLImageDecoderPlugin::icc_data()
 namespace AK {
 
 template<>
-struct Formatter<Gfx::Encoding> : Formatter<StringView> {
-    ErrorOr<void> format(FormatBuilder& builder, Gfx::Encoding const& header)
+struct Formatter<Gfx::JPEGXL::Encoding> : Formatter<StringView> {
+    ErrorOr<void> format(FormatBuilder& builder, Gfx::JPEGXL::Encoding const& header)
     {
         auto string = "Unknown"sv;
         switch (header) {
-        case Gfx::Encoding::kVarDCT:
+        case Gfx::JPEGXL::Encoding::kVarDCT:
             string = "VarDCT"sv;
             break;
-        case Gfx::Encoding::kModular:
+        case Gfx::JPEGXL::Encoding::kModular:
             string = "Modular"sv;
             break;
         default:
@@ -2923,17 +3861,17 @@ struct Formatter<Gfx::Encoding> : Formatter<StringView> {
 };
 
 template<>
-struct Formatter<Gfx::FrameHeader::FrameType> : Formatter<StringView> {
-    ErrorOr<void> format(FormatBuilder& builder, Gfx::FrameHeader::FrameType const& header)
+struct Formatter<Gfx::JPEGXL::FrameHeader::FrameType> : Formatter<StringView> {
+    ErrorOr<void> format(FormatBuilder& builder, Gfx::JPEGXL::FrameHeader::FrameType const& header)
     {
         switch (header) {
-        case Gfx::FrameHeader::FrameType::kRegularFrame:
+        case Gfx::JPEGXL::FrameHeader::FrameType::kRegularFrame:
             return Formatter<StringView>::format(builder, "RegularFrame"sv);
-        case Gfx::FrameHeader::FrameType::kLFFrame:
+        case Gfx::JPEGXL::FrameHeader::FrameType::kLFFrame:
             return Formatter<StringView>::format(builder, "LFFrame"sv);
-        case Gfx::FrameHeader::FrameType::kReferenceOnly:
+        case Gfx::JPEGXL::FrameHeader::FrameType::kReferenceOnly:
             return Formatter<StringView>::format(builder, "ReferenceOnly"sv);
-        case Gfx::FrameHeader::FrameType::kSkipProgressive:
+        case Gfx::JPEGXL::FrameHeader::FrameType::kSkipProgressive:
             return Formatter<StringView>::format(builder, "SkipProgressive"sv);
         }
         VERIFY_NOT_REACHED();

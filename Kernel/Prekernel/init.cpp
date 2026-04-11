@@ -224,11 +224,9 @@ extern "C" [[noreturn]] void init()
     info.physical_to_virtual_offset = kernel_load_base - kernel_physical_base;
     info.kernel_mapping_base = kernel_mapping_base;
     info.kernel_load_base = kernel_load_base;
-#if ARCH(X86_64)
     info.boot_pml4t = PhysicalAddress { bit_cast<PhysicalPtr>(+boot_pml4t) };
-#endif
     info.boot_pdpt = PhysicalAddress { bit_cast<PhysicalPtr>(+boot_pdpt) };
-    info.boot_method_specific.multiboot1.boot_pd0 = PhysicalAddress { bit_cast<PhysicalPtr>(+boot_pd0) };
+    info.arch_specific.boot_pd0 = PhysicalAddress { bit_cast<PhysicalPtr>(+boot_pd0) };
     info.boot_pd_kernel = PhysicalAddress { bit_cast<PhysicalPtr>(+boot_pd_kernel) };
     info.boot_pd_kernel_pt1023 = bit_cast<Memory::PageTableEntry*>(adjust_by_mapping_base(boot_pd_kernel_pt1023));
 
@@ -257,9 +255,5 @@ extern "C" [[noreturn]] void init()
 
     __builtin_unreachable();
 }
-
-// Define some Itanium C++ ABI methods to stop the linker from complaining.
-// If we actually call these something has gone horribly wrong
-void* __dso_handle __attribute__((visibility("hidden")));
 
 }

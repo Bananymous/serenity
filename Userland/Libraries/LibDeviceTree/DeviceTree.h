@@ -28,18 +28,35 @@ class Address {
 public:
     Address() = default;
     Address(ReadonlyBytes data)
-        : m_raw(static_cast<decltype(m_raw)>(data))
+        : m_raw(decltype(m_raw)::from_span(data).release_value_but_fixme_should_propagate_errors())
     {
     }
 
+    ErrorOr<Address> clone() const
+    {
+        return Address { TRY(m_raw.clone()) };
+    }
+
     ReadonlyBytes raw() const { return m_raw; }
+
+    template<typename T>
+    ErrorOr<T> as() const
+    {
+        if (m_raw.size() != sizeof(T))
+            return ERANGE;
+
+        T value;
+        __builtin_memcpy(&value, m_raw.data(), sizeof(T));
+
+        return value;
+    }
 
     static Address from_flatptr(FlatPtr flatptr)
     {
         BigEndian<FlatPtr> big_endian_flatptr { flatptr };
 
         Address address;
-        address.m_raw.resize(sizeof(FlatPtr));
+        address.m_raw.try_resize(sizeof(FlatPtr)).release_value_but_fixme_should_propagate_errors();
         __builtin_memcpy(address.m_raw.data(), &big_endian_flatptr, sizeof(big_endian_flatptr));
         return address;
     }
@@ -61,8 +78,13 @@ class Size {
 public:
     Size() = default;
     Size(ReadonlyBytes data)
-        : m_raw(static_cast<decltype(m_raw)>(data))
+        : m_raw(decltype(m_raw)::from_span(data).release_value_but_fixme_should_propagate_errors())
     {
+    }
+
+    ErrorOr<Size> clone() const
+    {
+        return Size { TRY(m_raw.clone()) };
     }
 
     ReadonlyBytes raw() const { return m_raw; }
@@ -82,7 +104,7 @@ private:
 
 struct Interrupt {
     Node const* domain_root;
-    ReadonlyBytes interrupt_identifier;
+    ReadonlyBytes interrupt_specifier;
 };
 
 struct Property {
@@ -166,8 +188,8 @@ struct Property {
 class RegEntry {
 public:
     RegEntry(Address const& address, Size const& size, Node const& node)
-        : m_address(address)
-        , m_length(size)
+        : m_address(address.clone().release_value_but_fixme_should_propagate_errors())
+        , m_length(size.clone().release_value_but_fixme_should_propagate_errors())
         , m_node(node)
     {
     }
@@ -179,8 +201,8 @@ public:
     {
     }
 
-    Address bus_address() const { return m_address; }
-    Size length() const { return m_length; }
+    Address bus_address() const { return m_address.clone().release_value_but_fixme_should_propagate_errors(); }
+    Size length() const { return m_length.clone().release_value_but_fixme_should_propagate_errors(); }
 
     ErrorOr<Address> resolve_root_address() const;
 
@@ -210,9 +232,9 @@ private:
 class RangesEntry {
 public:
     RangesEntry(Address const& child_bus_address, Address const& parent_bus_address, Size const& length, Node const& node)
-        : m_child_bus_address(child_bus_address)
-        , m_parent_bus_address(parent_bus_address)
-        , m_length(length)
+        : m_child_bus_address(child_bus_address.clone().release_value_but_fixme_should_propagate_errors())
+        , m_parent_bus_address(parent_bus_address.clone().release_value_but_fixme_should_propagate_errors())
+        , m_length(length.clone().release_value_but_fixme_should_propagate_errors())
         , m_node(node)
     {
     }
@@ -225,9 +247,9 @@ public:
     {
     }
 
-    Address child_bus_address() const { return m_child_bus_address; }
-    Address parent_bus_address() const { return m_parent_bus_address; }
-    Size length() const { return m_length; }
+    Address child_bus_address() const { return m_child_bus_address.clone().release_value_but_fixme_should_propagate_errors(); }
+    Address parent_bus_address() const { return m_parent_bus_address.clone().release_value_but_fixme_should_propagate_errors(); }
+    Size length() const { return m_length.clone().release_value_but_fixme_should_propagate_errors(); }
 
     ErrorOr<Address> translate_child_bus_address_to_parent_bus_address(Address const&) const;
 
@@ -251,6 +273,31 @@ public:
 
     ErrorOr<Address> translate_child_bus_address_to_parent_bus_address(Address const&) const;
 
+    struct Iterator {
+        Iterator(Ranges const& ranges, size_t index)
+            : m_ranges(ranges)
+            , m_index(index)
+        {
+        }
+
+        RangesEntry operator*() const { return MUST(m_ranges.entry(m_index)); }
+
+        Iterator& operator++()
+        {
+            ++m_index;
+            return *this;
+        }
+
+        bool operator==(Iterator const& other) const { return m_index == other.m_index; }
+
+    private:
+        Ranges const& m_ranges;
+        size_t m_index;
+    };
+
+    Iterator begin() const { return Iterator(*this, 0); }
+    Iterator end() const { return Iterator(*this, entry_count()); }
+
 private:
     ReadonlyBytes m_raw;
     Node const& m_node;
@@ -265,6 +312,24 @@ public:
     bool has_child(StringView child) const { return m_children.contains(child); }
 
     Optional<Property> get_property(StringView prop) const { return m_properties.get(prop).copy(); }
+
+    Optional<u32> get_u32_property(StringView property_name) const
+    {
+        auto maybe_property = m_properties.get(property_name);
+        if (!maybe_property.has_value() || maybe_property->size() != sizeof(u32))
+            return {};
+
+        return maybe_property->as<u32>();
+    }
+
+    Optional<u64> get_u64_property(StringView property_name) const
+    {
+        auto maybe_property = m_properties.get(property_name);
+        if (!maybe_property.has_value() || maybe_property->size() != sizeof(u64))
+            return {};
+
+        return maybe_property->as<u64>();
+    }
 
     // FIXME: The spec says that @address parts of the name should be ignored when looking up nodes
     //        when they do not appear in the queried name, and all nodes with the same name should be returned

@@ -34,7 +34,8 @@ public:
     }
     ~ScopedState()
     {
-        m_renderer.m_graphics_state_stack.shrink(m_starting_stack_depth);
+        while (m_renderer.m_graphics_state_stack.size() > m_starting_stack_depth)
+            MUST(m_renderer.handle_restore_state({}));
     }
 
 private:
@@ -59,26 +60,10 @@ ErrorOr<NonnullRefPtr<Gfx::Bitmap>> Renderer::apply_page_rotation(NonnullRefPtr<
     return bitmap;
 }
 
-static void rect_path(Gfx::Path& path, float x, float y, float width, float height)
-{
-    path.move_to({ x, y });
-    path.line_to({ x + width, y });
-    path.line_to({ x + width, y + height });
-    path.line_to({ x, y + height });
-    path.close();
-}
-
-template<typename T>
-static void rect_path(Gfx::Path& path, Gfx::Rect<T> rect)
-{
-    return rect_path(path, rect.x(), rect.y(), rect.width(), rect.height());
-}
-
-template<typename T>
-static Gfx::Path rect_path(Gfx::Rect<T> const& rect)
+static Gfx::Path rect_path(Gfx::FloatRect const& rect)
 {
     Gfx::Path path;
-    rect_path(path, rect);
+    path.rect(rect);
     return path;
 }
 
@@ -110,10 +95,25 @@ Renderer::Renderer(RefPtr<Document> document, Page const& page, RefPtr<Gfx::Bitm
     userspace_matrix.multiply(vertical_reflection_matrix);
     userspace_matrix.translate(0.0f, -height);
 
-    auto initial_clipping_path = rect_path(userspace_matrix.map(Gfx::FloatRect(0, 0, width, height)));
-    m_graphics_state_stack.append(GraphicsState { userspace_matrix, { initial_clipping_path, initial_clipping_path } });
+    auto initial_clipping_path = bitmap->rect();
+    m_graphics_state_stack.append(GraphicsState { userspace_matrix, { initial_clipping_path } });
 
     m_bitmap->fill(background_color);
+}
+
+void Renderer::show_clipping_paths()
+{
+    Gfx::Path::StrokeStyle stroke_style;
+    stroke_style.thickness = 6.0f;
+
+    auto dash_style = stroke_style;
+    dash_style.cap_style = Gfx::Path::CapStyle::Butt;
+    dash_style.dash_pattern = { 12, 12 };
+
+    for (auto const& path : m_clip_paths_to_show_for_debugging) {
+        m_anti_aliasing_painter.stroke_path(path, Gfx::Color { 0xff, 0x6b, 0x6b }, stroke_style);
+        m_anti_aliasing_painter.stroke_path(path, Gfx::Color { 0x4e, 0xcd, 0xc4 }, dash_style);
+    }
 }
 
 PDFErrorsOr<void> Renderer::render()
@@ -127,6 +127,10 @@ PDFErrorsOr<void> Renderer::render()
             errors.add_error(maybe_error.release_error());
         }
     }
+
+    copy_current_clip_path_content_to_output();
+    show_clipping_paths();
+
     if (!errors.errors().is_empty())
         return errors;
     return {};
@@ -155,12 +159,20 @@ PDFErrorOr<void> Renderer::handle_operator(Operator const& op, Optional<NonnullR
 RENDERER_HANDLER(save_state)
 {
     m_graphics_state_stack.append(state());
+    state().clipping_state.has_own_clip = false;
     return {};
 }
 
 RENDERER_HANDLER(restore_state)
 {
+    bool popped_state_had_own_clip = state().clipping_state.has_own_clip;
+    if (popped_state_had_own_clip)
+        finalize_clip_before_graphics_state_restore();
+
     m_graphics_state_stack.take_last();
+
+    if (popped_state_had_own_clip)
+        TRY(restore_previous_clip_after_graphics_state_restore());
     return {};
 }
 
@@ -237,14 +249,14 @@ RENDERER_HANDLER(set_graphics_state_from_dict)
 
 RENDERER_HANDLER(path_move)
 {
-    m_current_path.move_to(map(args[0].to_float(), args[1].to_float()));
+    m_current_path.move_to(Gfx::FloatPoint(args[0].to_float(), args[1].to_float()));
     return {};
 }
 
 RENDERER_HANDLER(path_line)
 {
     VERIFY(!m_current_path.is_empty());
-    m_current_path.line_to(map(args[0].to_float(), args[1].to_float()));
+    m_current_path.line_to(Gfx::FloatPoint(args[0].to_float(), args[1].to_float()));
     return {};
 }
 
@@ -252,9 +264,9 @@ RENDERER_HANDLER(path_cubic_bezier_curve)
 {
     VERIFY(args.size() == 6);
     m_current_path.cubic_bezier_curve_to(
-        map(args[0].to_float(), args[1].to_float()),
-        map(args[2].to_float(), args[3].to_float()),
-        map(args[4].to_float(), args[5].to_float()));
+        Gfx::FloatPoint(args[0].to_float(), args[1].to_float()),
+        Gfx::FloatPoint(args[2].to_float(), args[3].to_float()),
+        Gfx::FloatPoint(args[4].to_float(), args[5].to_float()));
     return {};
 }
 
@@ -265,8 +277,8 @@ RENDERER_HANDLER(path_cubic_bezier_curve_no_first_control)
     auto current_point = m_current_path.last_point();
     m_current_path.cubic_bezier_curve_to(
         current_point,
-        map(args[0].to_float(), args[1].to_float()),
-        map(args[2].to_float(), args[3].to_float()));
+        Gfx::FloatPoint(args[0].to_float(), args[1].to_float()),
+        Gfx::FloatPoint(args[2].to_float(), args[3].to_float()));
     return {};
 }
 
@@ -274,8 +286,8 @@ RENDERER_HANDLER(path_cubic_bezier_curve_no_second_control)
 {
     VERIFY(args.size() == 4);
     VERIFY(!m_current_path.is_empty());
-    auto first_control_point = map(args[0].to_float(), args[1].to_float());
-    auto second_control_point = map(args[2].to_float(), args[3].to_float());
+    Gfx::FloatPoint first_control_point(args[0].to_float(), args[1].to_float());
+    Gfx::FloatPoint second_control_point(args[2].to_float(), args[3].to_float());
     m_current_path.cubic_bezier_curve_to(
         first_control_point,
         second_control_point,
@@ -291,28 +303,109 @@ RENDERER_HANDLER(path_close)
 
 RENDERER_HANDLER(path_append_rect)
 {
-    auto rect = Gfx::FloatRect(args[0].to_float(), args[1].to_float(), args[2].to_float(), args[3].to_float());
-    // Note: The path of the rectangle is mapped (rather than the rectangle).
-    // This is because negative width/heights are possible, and result in different
-    // winding orders, but this is lost by Gfx::AffineTransform::map().
-    m_current_path.append_path(map(rect_path(rect)));
+    Gfx::FloatRect rect(args[0].to_float(), args[1].to_float(), args[2].to_float(), args[3].to_float());
+    m_current_path.rect(rect);
     return {};
 }
 
-void Renderer::activate_clip()
+PDFErrorOr<void> Renderer::prepare_clipped_bitmap_painter()
 {
-    auto bounding_box = state().clipping_paths.current.bounding_box().to_type<int>();
-    m_painter.clear_clip_rect();
-    if (m_rendering_preferences.show_clipping_paths) {
-        m_painter.draw_rect(bounding_box, Color::Black);
-    }
-    m_painter.add_clip_rect(bounding_box);
+    if (!m_clipped_bitmap)
+        m_clipped_bitmap = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, m_bitmap->size()));
+
+    m_clipped_bitmap_painter = Gfx::Painter { *m_clipped_bitmap };
+    m_clipped_bitmap_anti_aliasing_painter = Gfx::AntiAliasingPainter { *m_clipped_bitmap_painter };
+
+    auto r = state().clipping_state.clip_bounding_box;
+    m_clipped_bitmap_painter->add_clip_rect(r);
+
+    // Need to copy what's currently on the page so that transparent things in the clipped area are blended on top of the right things.
+    m_clipped_bitmap_painter->blit(r.location(), *m_bitmap, r);
+
+    return {};
 }
 
-void Renderer::deactivate_clip()
+static void apply_clip(Gfx::Bitmap& bitmap, Gfx::IntRect bitmap_rect, Gfx::Bitmap const& clip_alpha, Gfx::IntRect clip_rect)
 {
-    m_painter.clear_clip_rect();
-    state().clipping_paths.current = state().clipping_paths.next;
+    VERIFY(bitmap.size() == bitmap_rect.size() || (bitmap_rect.is_empty() && bitmap.size() == Gfx::IntSize(1, 1)));
+    VERIFY(clip_alpha.size() == clip_rect.size() || (clip_rect.is_empty() && clip_alpha.size() == Gfx::IntSize(1, 1)));
+    auto rect = bitmap_rect.intersected(clip_rect);
+
+    for (int y = rect.top(); y < rect.bottom(); ++y) {
+        for (int x = rect.left(); x < rect.right(); ++x) {
+            Gfx::IntPoint point { x, y };
+            auto pixel = bitmap.get_pixel(point - bitmap_rect.location());
+            auto alpha = clip_alpha.get_pixel(point - clip_rect.location());
+            pixel.set_alpha(pixel.alpha() * alpha.alpha() / 255);
+            bitmap.set_pixel(point - bitmap_rect.location(), pixel);
+        }
+    }
+}
+
+void Renderer::copy_current_clip_path_content_to_output()
+{
+    if (state().clipping_state.clip_path_alpha) {
+        auto r = state().clipping_state.clip_bounding_box;
+        apply_clip(*m_clipped_bitmap, m_clipped_bitmap->rect(), *state().clipping_state.clip_path_alpha, r);
+        m_painter.blit(r.location(), *m_clipped_bitmap, r);
+    }
+
+    m_clipped_bitmap_painter = {};
+    m_clipped_bitmap_anti_aliasing_painter = {};
+}
+
+PDFErrorOr<void> Renderer::add_clip_path(Gfx::Path clip_path, Gfx::WindingRule winding_rule)
+{
+    if (m_rendering_preferences.show_clipping_paths)
+        m_clip_paths_to_show_for_debugging.append(clip_path);
+
+    if (!m_rendering_preferences.apply_clip)
+        return {};
+
+    // If the clip is a rectangle that is larger than the current clip's bounding box, we can ignore it.
+    // This is important for performance, because many PDFs add a clip for the whole page before other clips,
+    // and we don't want to allocate a whole-page bitmap for those.
+    if (auto maybe_rect = clip_path.as_rect(); maybe_rect.has_value()) {
+        auto rect = Gfx::enclosing_int_rect(maybe_rect.value());
+        if (rect.contains(state().clipping_state.clip_bounding_box))
+            return {};
+    }
+
+    // About to set new clip; flush old one if needed.
+    copy_current_clip_path_content_to_output();
+
+    auto next_clipping_bbox = Gfx::enclosing_int_rect(clip_path.bounding_box());
+    next_clipping_bbox.intersect(state().clipping_state.clip_bounding_box);
+
+    auto clip_path_alpha = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, next_clipping_bbox.is_empty() ? Gfx::IntSize { 1, 1 } : next_clipping_bbox.size()));
+
+    clip_path.close_all_subpaths();
+    Gfx::Painter clip_painter(*clip_path_alpha);
+    Gfx::AntiAliasingPainter aa_clip_painter(clip_painter);
+    clip_painter.translate(-next_clipping_bbox.location());
+    aa_clip_painter.fill_path(clip_path, Color::Black, winding_rule);
+
+    if (state().clipping_state.clip_path_alpha)
+        apply_clip(*clip_path_alpha, next_clipping_bbox, *state().clipping_state.clip_path_alpha, state().clipping_state.clip_bounding_box);
+
+    state().clipping_state.clip_path_alpha = move(clip_path_alpha);
+    state().clipping_state.clip_bounding_box = next_clipping_bbox;
+    state().clipping_state.has_own_clip = true;
+
+    TRY(prepare_clipped_bitmap_painter());
+    return {};
+}
+
+void Renderer::finalize_clip_before_graphics_state_restore()
+{
+    copy_current_clip_path_content_to_output();
+}
+
+PDFErrorOr<void> Renderer::restore_previous_clip_after_graphics_state_restore()
+{
+    if (state().clipping_state.clip_path_alpha)
+        TRY(prepare_clipped_bitmap_painter());
+    return {};
 }
 
 ///
@@ -321,26 +414,73 @@ void Renderer::deactivate_clip()
 
 void Renderer::begin_path_paint()
 {
-    if (m_rendering_preferences.clip_paths)
-        activate_clip();
+    m_current_path.transform(state().ctm);
+    if (state().paint_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
+        VERIFY(!m_original_paint_style);
+        m_original_paint_style = state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>();
+        auto translation = Gfx::AffineTransform().translate(m_current_path.bounding_box().x(), m_current_path.bounding_box().y());
+        state().paint_style = { MUST(Gfx::OffsetPaintStyle::create(state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), translation)) };
+    }
 }
 
-void Renderer::end_path_paint()
+PDFErrorOr<void> Renderer::end_path_paint()
 {
+    if (m_add_path_as_clip != AddPathAsClip::No) {
+        TRY(add_clip_path(move(m_current_path), m_add_path_as_clip == AddPathAsClip::Nonzero ? Gfx::WindingRule::Nonzero : Gfx::WindingRule::EvenOdd));
+        m_add_path_as_clip = AddPathAsClip::No;
+    }
+
+    if (m_original_paint_style) {
+        state().paint_style = m_original_paint_style.release_nonnull();
+        m_original_paint_style = nullptr;
+    }
+
+    // "Once a path has been painted, it is no longer defined; there is then no current path
+    //  until a new one is begun with the m or re operator."
     m_current_path.clear();
-    if (m_rendering_preferences.clip_paths)
-        deactivate_clip();
+
+    return {};
+}
+
+void Renderer::stroke_current_path()
+{
+    if (state().stroke_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
+        anti_aliasing_painter().stroke_path(m_current_path, state().stroke_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), stroke_style(), state().stroke_alpha_constant);
+    } else {
+        anti_aliasing_painter().stroke_path(m_current_path, state().stroke_style.get<Color>(), stroke_style());
+    }
+}
+
+void Renderer::fill_current_path(Gfx::WindingRule winding_rule)
+{
+    auto path_end = m_current_path.end();
+    m_current_path.close_all_subpaths();
+    if (state().paint_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
+        anti_aliasing_painter().fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), state().paint_alpha_constant, winding_rule);
+    } else {
+        anti_aliasing_painter().fill_path(m_current_path, state().paint_style.get<Color>(), winding_rule);
+    }
+    // .close_all_subpaths() only adds to the end of the path, so we can .trim() the path to remove any changes.
+    m_current_path.trim(path_end);
+}
+
+void Renderer::fill_and_stroke_current_path(Gfx::WindingRule winding_rule)
+{
+    // Note: Just drawing the stroke on top of the fill is incorrect if the stroke is not opaque.
+    // See "Special Path-Painting Considerations" on page 569 of the PDF 1.7 spec:
+    // We're supposed to draw the stroke first, and then the fill only on pixels that weren't already stroked.
+    // (The spec says this in the language of knockout groups.)
+    // Having said that, while Acrobat Reader and PDFium get this right, PDF.js and Preview.app do not.
+    // FIXME: Once we have support for transparency groups, do this per spec.
+    fill_current_path(winding_rule);
+    stroke_current_path();
 }
 
 RENDERER_HANDLER(path_stroke)
 {
     begin_path_paint();
-    if (state().stroke_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), stroke_style());
-    } else {
-        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<Color>(), stroke_style());
-    }
-    end_path_paint();
+    stroke_current_path();
+    TRY(end_path_paint());
     return {};
 }
 
@@ -354,13 +494,8 @@ RENDERER_HANDLER(path_close_and_stroke)
 RENDERER_HANDLER(path_fill_nonzero)
 {
     begin_path_paint();
-    m_current_path.close_all_subpaths();
-    if (state().paint_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), 1.0, Gfx::WindingRule::Nonzero);
-    } else {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<Color>(), Gfx::WindingRule::Nonzero);
-    }
-    end_path_paint();
+    fill_current_path(Gfx::WindingRule::Nonzero);
+    TRY(end_path_paint());
     return {};
 }
 
@@ -372,49 +507,24 @@ RENDERER_HANDLER(path_fill_nonzero_deprecated)
 RENDERER_HANDLER(path_fill_evenodd)
 {
     begin_path_paint();
-    m_current_path.close_all_subpaths();
-    if (state().paint_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), 1.0, Gfx::WindingRule::EvenOdd);
-    } else {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<Color>(), Gfx::WindingRule::EvenOdd);
-    }
-    end_path_paint();
+    fill_current_path(Gfx::WindingRule::EvenOdd);
+    TRY(end_path_paint());
     return {};
 }
 
 RENDERER_HANDLER(path_fill_stroke_nonzero)
 {
     begin_path_paint();
-    if (state().stroke_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), stroke_style());
-    } else {
-        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<Color>(), stroke_style());
-    }
-    m_current_path.close_all_subpaths();
-    if (state().paint_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), 1.0, Gfx::WindingRule::Nonzero);
-    } else {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<Color>(), Gfx::WindingRule::Nonzero);
-    }
-    end_path_paint();
+    fill_and_stroke_current_path(Gfx::WindingRule::Nonzero);
+    TRY(end_path_paint());
     return {};
 }
 
 RENDERER_HANDLER(path_fill_stroke_evenodd)
 {
     begin_path_paint();
-    if (state().stroke_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), stroke_style());
-    } else {
-        m_anti_aliasing_painter.stroke_path(m_current_path, state().stroke_style.get<Color>(), stroke_style());
-    }
-    m_current_path.close_all_subpaths();
-    if (state().paint_style.has<NonnullRefPtr<Gfx::PaintStyle>>()) {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<NonnullRefPtr<Gfx::PaintStyle>>(), 1.0, Gfx::WindingRule::EvenOdd);
-    } else {
-        m_anti_aliasing_painter.fill_path(m_current_path, state().paint_style.get<Color>(), Gfx::WindingRule::EvenOdd);
-    }
-    end_path_paint();
+    fill_and_stroke_current_path(Gfx::WindingRule::EvenOdd);
+    TRY(end_path_paint());
     return {};
 }
 
@@ -433,23 +543,20 @@ RENDERER_HANDLER(path_close_fill_stroke_evenodd)
 RENDERER_HANDLER(path_end)
 {
     begin_path_paint();
-    end_path_paint();
+    TRY(end_path_paint());
     return {};
 }
 
 RENDERER_HANDLER(path_intersect_clip_nonzero)
 {
-    // FIXME: Support arbitrary path clipping in Path and utilize that here
-    auto next_clipping_bbox = state().clipping_paths.next.bounding_box();
-    next_clipping_bbox.intersect(m_current_path.bounding_box());
-    state().clipping_paths.next = rect_path(next_clipping_bbox);
+    m_add_path_as_clip = AddPathAsClip::Nonzero;
     return {};
 }
 
 RENDERER_HANDLER(path_intersect_clip_evenodd)
 {
-    // FIXME: Should have different behavior than path_intersect_clip_nonzero
-    return handle_path_intersect_clip_nonzero(args);
+    m_add_path_as_clip = AddPathAsClip::EvenOdd;
+    return {};
 }
 
 RENDERER_HANDLER(text_begin)
@@ -505,23 +612,73 @@ PDFErrorOr<NonnullRefPtr<PDFFont>> Renderer::get_font(FontCacheKey const& key)
     return font;
 }
 
-RENDERER_HANDLER(text_set_font)
+PDFErrorOr<void> Renderer::set_font(NonnullRefPtr<DictObject> font_dictionary, float font_size)
 {
-    auto target_font_name = MUST(m_document->resolve_to<NameObject>(args[0]))->name();
-
-    text_state().font_size = args[1].to_float();
+    text_state().font_size = font_size;
 
     auto& text_rendering_matrix = calculate_text_rendering_matrix();
-    auto font_size = text_rendering_matrix.x_scale() * text_state().font_size / text_state().horizontal_scaling;
+    auto cache_font_size = text_rendering_matrix.x_scale() * text_state().font_size / text_state().horizontal_scaling;
 
-    auto resources = extra_resources.value_or(m_page.resources);
-    auto fonts_dictionary = MUST(resources->get_dict(m_document, CommonNames::Font));
-    auto font_dictionary = MUST(fonts_dictionary->get_dict(m_document, target_font_name));
-
-    FontCacheKey cache_key { move(font_dictionary), font_size };
+    FontCacheKey cache_key { move(font_dictionary), cache_font_size };
     text_state().font = TRY(get_font(cache_key));
 
     m_text_rendering_matrix_is_dirty = true;
+    return {};
+}
+
+RENDERER_HANDLER(text_set_font)
+{
+    auto resources = extra_resources.value_or(m_page.resources);
+    auto fonts_dictionary = MUST(resources->get_dict(m_document, CommonNames::Font));
+
+    auto target_font_name = MUST(m_document->resolve_to<NameObject>(args[0]))->name();
+    auto font_dictionary = MUST(fonts_dictionary->get_dict(m_document, target_font_name));
+
+    return set_font(font_dictionary, args[1].to_float());
+}
+
+PDFErrorOr<void> Renderer::set_blend_mode(ReadonlySpan<Value> args)
+{
+    state().blend_mode = TRY([&]() -> PDFErrorOr<BlendMode> {
+        // "the application should use the first blend mode in the array that it recognizes (or Normal if it recognizes none of them)."
+        for (auto const& arg : args) {
+            auto name = TRY(m_document->resolve_to<NameObject>(arg))->name();
+            if (name == CommonNames::Normal)
+                return BlendMode::Normal;
+            if (name == CommonNames::Multiply)
+                return BlendMode::Multiply;
+            if (name == CommonNames::Screen)
+                return BlendMode::Screen;
+            if (name == CommonNames::Overlay)
+                return BlendMode::Overlay;
+            if (name == CommonNames::Darken)
+                return BlendMode::Darken;
+            if (name == CommonNames::Lighten)
+                return BlendMode::Lighten;
+            if (name == CommonNames::ColorDodge)
+                return BlendMode::ColorDodge;
+            if (name == CommonNames::ColorBurn)
+                return BlendMode::ColorBurn;
+            if (name == CommonNames::HardLight)
+                return BlendMode::HardLight;
+            if (name == CommonNames::SoftLight)
+                return BlendMode::SoftLight;
+            if (name == CommonNames::Difference)
+                return BlendMode::Difference;
+            if (name == CommonNames::Exclusion)
+                return BlendMode::Exclusion;
+            if (name == CommonNames::Hue)
+                return BlendMode::Hue;
+            if (name == CommonNames::Saturation)
+                return BlendMode::Saturation;
+            if (name == CommonNames::Color)
+                return BlendMode::Color;
+            if (name == CommonNames::Luminosity)
+                return BlendMode::Luminosity;
+            dbgln("Unknown blend mode: {}", name);
+        }
+        return BlendMode::Normal;
+    }());
     return {};
 }
 
@@ -653,90 +810,73 @@ RENDERER_HANDLER(set_painting_space)
 
 RENDERER_HANDLER(set_stroking_color)
 {
-    state().stroke_style = TRY(state().stroke_color_space->style(args));
+    state().stroke_style = style_with_alpha(TRY(state().stroke_color_space->style(args)), state().stroke_alpha_constant);
     return {};
 }
 
 RENDERER_HANDLER(set_stroking_color_extended)
 {
-    // FIXME: Handle Pattern color spaces
-    auto last_arg = args.last();
-    if (last_arg.has<NonnullRefPtr<Object>>() && last_arg.get<NonnullRefPtr<Object>>()->is<NameObject>()) {
-        dbgln("pattern space {}", last_arg.get<NonnullRefPtr<Object>>()->cast<NameObject>()->name());
-        return Error::rendering_unsupported_error("Pattern color spaces not yet implemented");
-    }
-
-    state().stroke_style = TRY(state().stroke_color_space->style(args));
+    // FIXME: Pattern color spaces might need extra resources
+    state().stroke_style = style_with_alpha(TRY(state().stroke_color_space->style(args)), state().stroke_alpha_constant);
     return {};
 }
 
 RENDERER_HANDLER(set_painting_color)
 {
-    state().paint_style = TRY(state().paint_color_space->style(args));
+    state().paint_style = style_with_alpha(TRY(state().paint_color_space->style(args)), state().paint_alpha_constant);
     return {};
 }
 
 RENDERER_HANDLER(set_painting_color_extended)
 {
-    // FIXME: Handle Pattern color spaces
-    auto last_arg = args.last();
-    if (last_arg.has<NonnullRefPtr<Object>>() && last_arg.get<NonnullRefPtr<Object>>()->is<NameObject>()) {
-        dbgln("pattern space {}", last_arg.get<NonnullRefPtr<Object>>()->cast<NameObject>()->name());
-        return Error::rendering_unsupported_error("Pattern color spaces not yet implemented");
-    }
-
-    state().paint_style = TRY(state().paint_color_space->style(args));
+    state().paint_style = style_with_alpha(TRY(state().paint_color_space->style(args)), state().paint_alpha_constant);
     return {};
 }
 
 RENDERER_HANDLER(set_stroking_color_and_space_to_gray)
 {
     state().stroke_color_space = DeviceGrayColorSpace::the();
-    state().stroke_style = TRY(state().stroke_color_space->style(args));
+    state().stroke_style = style_with_alpha(TRY(state().stroke_color_space->style(args)), state().stroke_alpha_constant);
     return {};
 }
 
 RENDERER_HANDLER(set_painting_color_and_space_to_gray)
 {
     state().paint_color_space = DeviceGrayColorSpace::the();
-    state().paint_style = TRY(state().paint_color_space->style(args));
+    state().paint_style = style_with_alpha(TRY(state().paint_color_space->style(args)), state().paint_alpha_constant);
     return {};
 }
 
 RENDERER_HANDLER(set_stroking_color_and_space_to_rgb)
 {
     state().stroke_color_space = DeviceRGBColorSpace::the();
-    state().stroke_style = TRY(state().stroke_color_space->style(args));
+    state().stroke_style = style_with_alpha(TRY(state().stroke_color_space->style(args)), state().stroke_alpha_constant);
     return {};
 }
 
 RENDERER_HANDLER(set_painting_color_and_space_to_rgb)
 {
     state().paint_color_space = DeviceRGBColorSpace::the();
-    state().paint_style = TRY(state().paint_color_space->style(args));
+    state().paint_style = style_with_alpha(TRY(state().paint_color_space->style(args)), state().paint_alpha_constant);
     return {};
 }
 
 RENDERER_HANDLER(set_stroking_color_and_space_to_cmyk)
 {
     state().stroke_color_space = TRY(DeviceCMYKColorSpace::the());
-    state().stroke_style = TRY(state().stroke_color_space->style(args));
+    state().stroke_style = style_with_alpha(TRY(state().stroke_color_space->style(args)), state().stroke_alpha_constant);
     return {};
 }
 
 RENDERER_HANDLER(set_painting_color_and_space_to_cmyk)
 {
     state().paint_color_space = TRY(DeviceCMYKColorSpace::the());
-    state().paint_style = TRY(state().paint_color_space->style(args));
+    state().paint_style = style_with_alpha(TRY(state().paint_color_space->style(args)), state().paint_alpha_constant);
     return {};
 }
 
 RENDERER_HANDLER(shade)
 {
-    auto inverse_ctm = state().ctm.inverse();
-    if (!inverse_ctm.has_value())
-        return {};
-
     VERIFY(args.size() == 1);
     auto shading_name = MUST(m_document->resolve_to<NameObject>(args[0]))->name();
     auto resources = extra_resources.value_or(m_page.resources);
@@ -749,8 +889,15 @@ RENDERER_HANDLER(shade)
     auto shading_dict_or_stream = TRY(shading_resource_dict->get_object(m_document, shading_name));
     auto shading = TRY(Shading::create(m_document, shading_dict_or_stream, *this));
 
-    ClipRAII clip_raii { *this };
-    return shading->draw(m_painter, inverse_ctm.value());
+    Optional<ScopedState> scoped_state;
+    if (auto maybe_bbox = shading->bounding_box(); maybe_bbox.has_value()) {
+        scoped_state = ScopedState { *this };
+        auto bbox_path = rect_path(maybe_bbox.value());
+        bbox_path.transform(state().ctm);
+        TRY(add_clip_path(bbox_path, Gfx::WindingRule::Nonzero));
+    }
+
+    return shading->draw(painter(), state().ctm);
 }
 
 RENDERER_HANDLER(inline_image_begin)
@@ -903,7 +1050,7 @@ RENDERER_HANDLER(inline_image_end)
     auto expanded_inline_stream = TRY(expand_inline_image_abbreviations(inline_stream, resources, m_document));
     TRY(m_document->unfilter_stream(expanded_inline_stream));
 
-    TRY(show_image(expanded_inline_stream));
+    TRY(paint_image_xobject(expanded_inline_stream));
     return {};
 }
 
@@ -911,34 +1058,22 @@ RENDERER_HANDLER(paint_xobject)
 {
     VERIFY(args.size() > 0);
     auto resources = extra_resources.value_or(m_page.resources);
+    if (!resources->contains(CommonNames::XObject))
+        return Error::malformed_error("XObject resource dictionary missing");
+
     auto xobject_name = args[0].get<NonnullRefPtr<Object>>()->cast<NameObject>()->name();
     auto xobjects_dict = TRY(resources->get_dict(m_document, CommonNames::XObject));
+    if (!xobjects_dict->contains(xobject_name))
+        return Error::malformed_error("XObject resource dictionary does not contain {}", xobject_name);
+
     auto xobject = TRY(xobjects_dict->get_stream(m_document, xobject_name));
-
-    Optional<NonnullRefPtr<DictObject>> xobject_resources {};
-    if (xobject->dict()->contains(CommonNames::Resources)) {
-        xobject_resources = xobject->dict()->get_dict(m_document, CommonNames::Resources).value();
-    }
-
     auto subtype = MUST(xobject->dict()->get_name(m_document, CommonNames::Subtype))->name();
     if (subtype == CommonNames::Image) {
-        TRY(show_image(xobject));
+        TRY(paint_image_xobject(xobject));
         return {};
     }
 
-    ScopedState scoped_state { *this };
-
-    Vector<Value> matrix;
-    if (xobject->dict()->contains(CommonNames::Matrix)) {
-        matrix = xobject->dict()->get_array(m_document, CommonNames::Matrix).value()->elements();
-    } else {
-        matrix = Vector { Value { 1 }, Value { 0 }, Value { 0 }, Value { 1 }, Value { 0 }, Value { 0 } };
-    }
-    MUST(handle_concatenate_matrix(matrix));
-    auto operators = TRY(Parser::parse_operators(m_document, xobject->bytes()));
-    for (auto& op : operators)
-        TRY(handle_operator(op, xobject_resources));
-    return {};
+    return paint_form_xobject(xobject);
 }
 
 RENDERER_HANDLER(marked_content_point)
@@ -984,6 +1119,16 @@ RENDERER_HANDLER(compatibility_end)
 {
     // See comment in compatibility_begin.
     return {};
+}
+
+Gfx::Painter& Renderer::painter()
+{
+    return m_clipped_bitmap_painter.has_value() ? *m_clipped_bitmap_painter : m_painter;
+}
+
+Gfx::AntiAliasingPainter& Renderer::anti_aliasing_painter()
+{
+    return m_clipped_bitmap_anti_aliasing_painter.has_value() ? *m_clipped_bitmap_anti_aliasing_painter : m_anti_aliasing_painter;
 }
 
 template<typename T>
@@ -1060,6 +1205,70 @@ Gfx::Path::StrokeStyle Renderer::stroke_style() const
     return { line_width(), line_cap_style(), line_join_style(), state().miter_limit, move(dash_pattern), dash_phase };
 }
 
+PDFErrorOr<GraphicsState::SMask> Renderer::read_smask_dict(NonnullRefPtr<DictObject> dict)
+{
+    // PDF 1.7 spec, TABLE 7.10 Entries in a soft-mask dictionary
+
+    // "Type (name) (Optional)"
+    if (dict->contains(CommonNames::Type)) {
+        auto type = TRY(dict->get_name(m_document, CommonNames::Type));
+        if (type->name() != CommonNames::Mask)
+            return Error::malformed_error("Soft mask dictionary has invalid /Type: {}", type->name());
+    }
+
+    // "S (name) (Required)"
+    auto type = TRY([&]() -> PDFErrorOr<GraphicsState::SMask::Type> {
+        if (!dict->contains(CommonNames::S))
+            return Error::malformed_error("Missing required /S in soft mask dictionary");
+        auto s = TRY(dict->get_name(m_document, CommonNames::S))->name();
+        if (s == "Alpha")
+            return GraphicsState::SMask::Type::Alpha;
+        if (s == "Luminosity")
+            return GraphicsState::SMask::Type::Luminosity;
+        return Error::malformed_error("Unknown value for /S in soft mask dictionary: {}", s);
+    }());
+
+    // "G (stream) (Required)"
+    auto group = TRY(dict->get_stream(m_document, CommonNames::G));
+    if (!group->dict()->contains(CommonNames::Group))
+        return Error::malformed_error("Soft mask group is missing /Group");
+    auto group_attributes = TRY(read_transparency_group_attributes(TRY(group->dict()->get_dict(m_document, CommonNames::Group))));
+
+    // "If the subtype S is Luminosity, the group attributes dictionary
+    //  must contain a CS entry defining the color space in which the compositing
+    //  computation is to be performed."
+    if (type == GraphicsState::SMask::Type::Luminosity && !group_attributes.color_space)
+        return Error::malformed_error("Soft mask group attributes dictionary must contain /CS for Luminosity SMask");
+
+    GraphicsState::SMask smask { .type = type, .group = group, .group_attributes = group_attributes };
+
+    // "BC (array) (Optional)"
+    if (dict->contains(CommonNames::BC)) {
+        // FIXME: If we validate group further up, we could validate number of components against
+        // the group's color space, and maybe set background_color the color space's default color
+        // if there's no explicit /BC entry.
+        auto background_color = TRY(dict->get_array(m_document, CommonNames::BC));
+        for (auto& component : background_color->elements())
+            smask.background_color.append(component.to_float());
+    }
+
+    // "BC (function or name) (Optional)"
+    if (dict->contains(CommonNames::TR)) {
+        auto function = TRY(dict->get_object(m_document, CommonNames::TR));
+        if (function->is<NameObject>()) {
+            auto name = function->cast<NameObject>()->name();
+            if (name != CommonNames::Identity)
+                return Error::malformed_error("Unknown soft mask transfer function name: {}", name);
+            // A nullptr value means identity.
+            smask.transfer_function = nullptr;
+        } else {
+            smask.transfer_function = TRY(Function::create(m_document, function));
+        }
+    }
+
+    return smask;
+}
+
 PDFErrorOr<void> Renderer::set_graphics_state_from_dict(NonnullRefPtr<DictObject> dict)
 {
     // ISO 32000 (PDF 2.0), 8.4.5 Graphics state parameter dictionaries
@@ -1084,16 +1293,27 @@ PDFErrorOr<void> Renderer::set_graphics_state_from_dict(NonnullRefPtr<DictObject
     if (dict->contains(CommonNames::RI))
         TRY(handle_set_color_rendering_intent(Array { dict->get_value(CommonNames::RI) }));
 
+    // Overprint control.
     // FIXME: OP
     // FIXME: op
     // FIXME: OPM
-    // FIXME: Font
+
+    if (dict->contains(CommonNames::Font))
+        return Error::rendering_unsupported_error("Setting font via graphics state dictionary not yet supported");
+
+    // Black generation.
     // FIXME: BG
     // FIXME: BG2
+
+    // Undercolor removal.
     // FIXME: UCR
     // FIXME: UCR2
+
+    // Transfer function.
     // FIXME: TR
     // FIXME: TR2
+
+    // Halftone dictionary.
     // FIXME: HT
 
     if (dict->contains(CommonNames::FL))
@@ -1101,12 +1321,48 @@ PDFErrorOr<void> Renderer::set_graphics_state_from_dict(NonnullRefPtr<DictObject
 
     // FIXME: SM
     // FIXME: SA
-    // FIXME: BM
-    // FIXME: SMask
-    // FIXME: CA
-    // FIXME: ca
-    // FIXME: AIS
-    // FIXME: TK
+
+    // Transparent imaging model.
+
+    if (dict->contains(CommonNames::BM)) {
+        auto args = TRY(dict->get_object(m_document, CommonNames::BM));
+        if (args->is<ArrayObject>())
+            TRY(set_blend_mode(args->cast<ArrayObject>()->elements()));
+        else
+            TRY(set_blend_mode(Array { Value { args->cast<NameObject>() } }));
+    }
+
+    if (dict->contains(CommonNames::SMask)) {
+        auto smask = TRY(dict->get_object(m_document, CommonNames::SMask));
+        if (smask->is<NameObject>()) {
+            // "The name None may be specified in place of a soft-mask dictionary, denoting the absence
+            //  of a soft mask. In this case, the mask shape or opacity is implicitly 1.0 everywhere."
+            auto name = smask->cast<NameObject>()->name();
+            if (name != CommonNames::None)
+                return Error::malformed_error("Unknown soft mask name: {}", name);
+            state().soft_mask = {};
+        } else {
+            state().soft_mask = TRY(read_smask_dict(smask->cast<DictObject>()));
+        }
+    }
+
+    if (dict->contains(CommonNames::CA) && m_rendering_preferences.use_constant_alpha) {
+        state().stroke_alpha_constant = dict->get_value(CommonNames::CA).to_float();
+        state().stroke_style = style_with_alpha(state().stroke_style, state().stroke_alpha_constant);
+    }
+
+    if (dict->contains(CommonNames::ca) && m_rendering_preferences.use_constant_alpha) {
+        state().paint_alpha_constant = dict->get_value(CommonNames::ca).to_float();
+        state().paint_style = style_with_alpha(state().paint_style, state().paint_alpha_constant);
+    }
+
+    if (dict->contains(CommonNames::AIS)) // "alpha is shape"
+        state().alpha_source = dict->get_value(CommonNames::AIS).get<bool>() ? AlphaSource::Shape : AlphaSource::Opacity;
+
+    if (dict->contains(CommonNames::TK))
+        state().text_state.knockout = dict->get_value(CommonNames::TK).get<bool>();
+
+    // PDF 2.0 additions.
     // FIXME: UseBlackPtComp
     // FIXME: HTO
 
@@ -1118,17 +1374,102 @@ PDFErrorOr<void> Renderer::show_text(ByteString const& string)
     if (!text_state().font)
         return Error::rendering_unsupported_error("Can't draw text because an invalid font was in use");
 
-    OwnPtr<ClipRAII> clip_raii;
-    if (m_rendering_preferences.clip_text)
-        clip_raii = make<ClipRAII>(*this);
-
     auto start_position = Gfx::FloatPoint { 0.0f, 0.0f };
-    auto end_position = TRY(text_state().font->draw_string(m_painter, start_position, string, *this));
+    auto end_position = TRY(text_state().font->draw_string(painter(), start_position, string, *this));
 
     // Update text matrix.
     auto delta = end_position - start_position;
-    m_text_rendering_matrix_is_dirty = true;
+    delta.set_x(delta.x() * text_state().horizontal_scaling);
     m_text_matrix.translate(delta);
+    m_text_rendering_matrix_is_dirty = true;
+    return {};
+}
+
+PDFErrorOr<TransparencyGroupAttributes> Renderer::read_transparency_group_attributes(NonnullRefPtr<DictObject> group_dict)
+{
+    // TABLE 7.13 Additional entries specific to a transparency group attributes dictionary
+    TransparencyGroupAttributes attributes;
+
+    auto name = TRY(group_dict->get_name(m_document, CommonNames::S))->name();
+    if (name != CommonNames::Transparency)
+        return Error::malformed_error("Invalid transparency group /S: {}", name);
+
+    if (group_dict->contains(CommonNames::CS)) {
+        auto color_space_object = TRY(group_dict->get_object(m_document, CommonNames::CS));
+        auto color_space = TRY(get_color_space_from_document(color_space_object));
+
+        // "These restrictions exclude Lab and lightness-chromaticity ICCBased color spac-
+        //  es, as well as the special color spaces Pattern, Indexed, Separation, and DeviceN."
+        if (color_space->family() == ColorSpaceFamily::Lab
+            || color_space->family() == ColorSpaceFamily::Pattern
+            || color_space->family() == ColorSpaceFamily::Indexed
+            || color_space->family() == ColorSpaceFamily::Separation
+            || color_space->family() == ColorSpaceFamily::DeviceN) {
+            // FIXME: Reject Lab and lightness-chromaticity ICCBased color spaces.
+            return Error::malformed_error("Invalid transparency group /CS");
+        }
+
+        attributes.color_space = color_space;
+    }
+
+    if (group_dict->contains(CommonNames::I))
+        attributes.is_isolated = TRY(m_document->resolve_to<bool>(group_dict->get_value(CommonNames::I)));
+
+    if (group_dict->contains(CommonNames::K))
+        attributes.is_knockout = TRY(m_document->resolve_to<bool>(group_dict->get_value(CommonNames::K)));
+
+    return attributes;
+}
+
+PDFErrorOr<void> Renderer::paint_form_xobject(NonnullRefPtr<StreamObject> form)
+{
+    Optional<NonnullRefPtr<DictObject>> xobject_resources {};
+    if (form->dict()->contains(CommonNames::Resources)) {
+        xobject_resources = TRY(form->dict()->get_dict(m_document, CommonNames::Resources));
+    }
+
+    Optional<TransparencyGroupAttributes> transparency_group_attributes;
+    if (form->dict()->contains(CommonNames::Group)) {
+        auto group = TRY(form->dict()->get_dict(m_document, CommonNames::Group));
+        transparency_group_attributes = TRY(read_transparency_group_attributes(group));
+    }
+
+    // FIXME: If transparency_group_attributes.has_value(), paint as transparency group.
+
+    // 4.9 Form XObjects
+    // "When the Do operator is applied to a form XObject, it does the following tasks:"
+    // "1. Saves the current graphics state, as if by invoking the q operator"
+    ScopedState scoped_state { *this };
+
+    // "2. Concatenates the matrix from the form dictionary’s Matrix entry with the cur-
+    //     rent transformation matrix (CTM)"
+    Vector<Value> matrix;
+    if (form->dict()->contains(CommonNames::Matrix)) {
+        matrix = TRY(form->dict()->get_array(m_document, CommonNames::Matrix))->elements();
+    } else {
+        matrix = Vector { Value { 1 }, Value { 0 }, Value { 0 }, Value { 1 }, Value { 0 }, Value { 0 } };
+    }
+    MUST(handle_concatenate_matrix(matrix));
+
+    // "3. Clips according to the form dictionary’s BBox entry"
+    auto bbox_array = TRY(form->dict()->get_array(m_document, CommonNames::BBox));
+    if (bbox_array->size() != 4)
+        return Error::malformed_error("BBox must have 4 elements");
+    auto bbox = Gfx::FloatRect::from_two_points(
+        { bbox_array->at(0).to_float(), bbox_array->at(1).to_float() },
+        { bbox_array->at(2).to_float(), bbox_array->at(3).to_float() });
+    auto bbox_path = rect_path(bbox);
+    bbox_path.transform(state().ctm);
+    TRY(add_clip_path(bbox_path, Gfx::WindingRule::Nonzero));
+
+    // "4. Paints the graphics objects specified in the form’s content stream"
+    auto operators = TRY(Parser::parse_operators(m_document, form->bytes()));
+    for (auto& op : operators)
+        TRY(handle_operator(op, xobject_resources));
+
+    // "5. Restores the saved graphics state, as if by invoking the Q operator"
+    // Done by ScopedState destructor.
+
     return {};
 }
 
@@ -1223,7 +1564,7 @@ PDFErrorOr<Renderer::LoadedImage> Renderer::load_image(NonnullRefPtr<StreamObjec
 
     // "(Required for images, except those that use the JPXDecode filter; not allowed for image masks) [...]
     //  it can be any type of color space except Pattern."
-    NonnullRefPtr<ColorSpace> color_space = DeviceGrayColorSpace::the();
+    NonnullRefPtr<ColorSpaceWithFloatArgs> color_space = DeviceGrayColorSpace::the();
     if (!is_image_mask) {
         // "If ColorSpace is not present in the image dictionary, the color space informa-
         //  tion in the JPEG2000 data is used."
@@ -1232,7 +1573,7 @@ PDFErrorOr<Renderer::LoadedImage> Renderer::load_image(NonnullRefPtr<StreamObjec
         if (!image_dict->contains(CommonNames::ColorSpace) && is_jpeg2000)
             return Error(Error::Type::RenderingUnsupported, "Using color space from jpeg2000 image not yet implemented");
         auto color_space_object = MUST(image_dict->get_object(m_document, CommonNames::ColorSpace));
-        color_space = TRY(get_color_space_from_document(color_space_object));
+        color_space = verify_cast<ColorSpaceWithFloatArgs>(*TRY(get_color_space_from_document(color_space_object)));
     }
 
     auto color_rendering_intent = state().color_rendering_intent;
@@ -1278,11 +1619,12 @@ PDFErrorOr<Renderer::LoadedImage> Renderer::load_image(NonnullRefPtr<StreamObjec
 
         auto const bytes_per_line = ceil_div(width, 8);
         for (int y = 0; y < height; ++y) {
+            u32* scanline = bitmap->scanline(y);
             for (int x = 0; x < width; ++x) {
                 auto byte = content[y * bytes_per_line + x / 8];
                 auto bit = 7 - (x % 8);
                 auto color = colors[(byte >> bit) & 1];
-                bitmap->set_pixel(x, y, color);
+                scanline[x] = color.value();
             }
         }
 
@@ -1400,11 +1742,11 @@ Gfx::AffineTransform Renderer::calculate_image_space_transformation(Gfx::IntSize
     return image_space;
 }
 
-void Renderer::show_empty_image(Gfx::IntSize size)
+void Renderer::paint_empty_image(Gfx::IntSize size)
 {
     auto image_space_transformation = calculate_image_space_transformation(size);
     auto image_border = image_space_transformation.map(Gfx::IntRect { {}, size });
-    m_painter.stroke_path(rect_path(image_border), Color::Black, 1);
+    painter().stroke_path(rect_path(image_border.to_type<float>()), Color::Black, 1);
 }
 
 static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> apply_alpha_channel(NonnullRefPtr<Gfx::Bitmap> image_bitmap, NonnullRefPtr<Gfx::Bitmap const> mask_bitmap, bool invert_alpha = false)
@@ -1435,18 +1777,14 @@ static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> apply_alpha_channel(NonnullRefPtr<Gfx
     return image_bitmap;
 }
 
-PDFErrorOr<void> Renderer::show_image(NonnullRefPtr<StreamObject> image)
+PDFErrorOr<void> Renderer::paint_image_xobject(NonnullRefPtr<StreamObject> image)
 {
     auto image_dict = image->dict();
-
-    OwnPtr<ClipRAII> clip_raii;
-    if (m_rendering_preferences.clip_images)
-        clip_raii = make<ClipRAII>(*this);
 
     if (!m_rendering_preferences.show_images) {
         auto width = TRY(m_document->resolve_to<int>(image_dict->get_value(CommonNames::Width)));
         auto height = TRY(m_document->resolve_to<int>(image_dict->get_value(CommonNames::Height)));
-        show_empty_image({ width, height });
+        paint_empty_image({ width, height });
         return {};
     }
     auto image_bitmap = TRY(load_image(image));
@@ -1480,9 +1818,14 @@ PDFErrorOr<void> Renderer::show_image(NonnullRefPtr<StreamObject> image)
         }
     }
 
+    // Per 7.2.6 Shape and Opacity Computations: object, mask, and constant shape and opacity values are multiplied together,
+    // so we should use both mask and graphics state constant opacity when drawing the bitmap.
+    // 7.5.3 Specifying Shape and Opacity, Mask Shape and Opacity suggests that an image has either object or mask shape and opacity, but not both.
+    float opacity = state().paint_alpha_constant;
+
     auto image_space = calculate_image_space_transformation(image_bitmap.bitmap->size());
     auto image_rect = Gfx::FloatRect { image_bitmap.bitmap->rect() };
-    m_painter.draw_scaled_bitmap_with_transform(image_bitmap.bitmap->rect(), image_bitmap.bitmap, image_rect, image_space);
+    painter().draw_scaled_bitmap_with_transform(image_bitmap.bitmap->rect(), image_bitmap.bitmap, image_rect, image_space, opacity);
     return {};
 }
 
@@ -1493,7 +1836,7 @@ PDFErrorOr<NonnullRefPtr<ColorSpace>> Renderer::get_color_space_from_resources(V
     if (!maybe_color_space_family.is_error()) {
         auto color_space_family = maybe_color_space_family.release_value();
         if (color_space_family.may_be_specified_directly()) {
-            return ColorSpace::create(color_space_name, *this);
+            return ColorSpace::create(color_space_name, *this, resources);
         }
     }
     auto color_space_resource_dict = TRY(resources->get_dict(m_document, CommonNames::ColorSpace));

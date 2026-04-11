@@ -61,8 +61,13 @@ namespace Kernel::PCI {
 struct PCIConfiguration {
     FlatPtr mmio_32bit_base { 0 };
     FlatPtr mmio_32bit_end { 0 };
+
     FlatPtr mmio_64bit_base { 0 };
     FlatPtr mmio_64bit_end { 0 };
+
+    FlatPtr io_base { 0 };
+    FlatPtr io_end { 0 };
+
     // The keys contains the bus, device & function at the same offsets as OpenFirmware PCI addresses,
     // with the least significant 8 bits being the interrupt pin.
     HashMap<PCIInterruptSpecifier, u64> masked_interrupt_mapping;
@@ -85,6 +90,17 @@ public:
 
     void enumerate_attached_devices(Function<void(EnumerableDeviceIdentifier const&)> callback, Function<void(EnumerableDeviceIdentifier const&)> post_bridge_callback = nullptr);
     void configure_attached_devices(PCIConfiguration&);
+
+    ErrorOr<PhysicalAddress> translate_bus_address_to_host_address(BARSpaceType, u64) const;
+
+    struct Window {
+        PhysicalAddress host_address;
+        u64 bus_address;
+        size_t size;
+    };
+
+    ErrorOr<void> add_memory_space_window(Window const&);
+    ErrorOr<void> add_io_space_window(Window const&);
 
 private:
     void enumerate_bus(Function<void(EnumerableDeviceIdentifier const&)> const& callback, Function<void(EnumerableDeviceIdentifier const&)>& post_bridge_callback, BusNumber, bool recursive_search_into_bridges);
@@ -118,6 +134,9 @@ protected:
 
 private:
     Bitmap m_enumerated_buses;
+
+    Vector<Window> m_memory_space_windows;
+    Vector<Window> m_io_space_windows;
 };
 
 }

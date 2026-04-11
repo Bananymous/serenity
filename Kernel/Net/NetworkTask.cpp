@@ -62,7 +62,7 @@ void NetworkTask_main(void*)
 {
     delayed_ack_sockets = new HashTable<NonnullRefPtr<TCPSocket>>;
 
-    WaitQueue packet_wait_queue;
+    DeprecatedWaitQueue packet_wait_queue;
     int pending_packets = 0;
     NetworkingManagement::the().for_each([&](auto& adapter) {
         dmesgln("NetworkTask: {} network adapter found: hw={}", adapter.class_name(), adapter.mac_address().to_string());
@@ -331,10 +331,10 @@ void handle_icmpv6(EthernetFrameHeader const& eth, IPv6PacketHeader const& ipv6_
         header.next_header = TransportProtocol::ICMPv6;
 
         InternetChecksum checksum;
-        checksum.add({ &header, sizeof(IPv6PseudoHeader) });
-        checksum.add({ &response, sizeof(advertisement_with_option) });
+        checksum.update({ &header, sizeof(IPv6PseudoHeader) });
+        checksum.update({ &response, sizeof(advertisement_with_option) });
 
-        response.base.header.set_checksum(checksum.finish());
+        response.base.header.set_checksum(checksum.digest());
     } else if (icmpv6_header.type() == ICMPv6Type::EchoRequest) {
         dbgln_if(ICMPV6_DEBUG, "handle_icmp6: got echo request");
         if (icmp_packet_size < sizeof(ICMPv6Echo)) {
@@ -370,10 +370,10 @@ void handle_icmpv6(EthernetFrameHeader const& eth, IPv6PacketHeader const& ipv6_
             memcpy(response.payload(), request.payload(), icmp_packet_size - sizeof(ICMPv6Echo));
 
         InternetChecksum checksum;
-        checksum.add({ &header, sizeof(IPv6PseudoHeader) });
-        checksum.add({ &response, icmp_packet_size });
+        checksum.update({ &header, sizeof(IPv6PseudoHeader) });
+        checksum.update({ &response, icmp_packet_size });
 
-        response.header.set_checksum(checksum.finish());
+        response.header.set_checksum(checksum.digest());
     } else {
         dbgln_if(ICMPV6_DEBUG, "handle_icmp6: got unknown ICMPv6 type {:#02x}", icmpv6_header.type());
         return;
@@ -396,7 +396,7 @@ void handle_icmp(EthernetFrameHeader const& eth, IPv4Packet const& ipv4_packet, 
         IPv4Socket::all_sockets().with_exclusive([&](auto& sockets) {
             for (auto& socket : sockets) {
                 if (socket.protocol() == (unsigned)TransportProtocol::ICMP)
-                    icmp_sockets.append(socket);
+                    icmp_sockets.try_append(socket).release_value_but_fixme_should_propagate_errors();
             }
         });
         for (auto& socket : icmp_sockets)
@@ -431,9 +431,7 @@ void handle_icmp(EthernetFrameHeader const& eth, IPv4Packet const& ipv4_packet, 
         if (icmp_packet_size > icmp_header_size)
             memcpy(response.payload, request.payload, icmp_packet_size - icmp_header_size);
 
-        InternetChecksum checksum;
-        checksum.add({ &response, icmp_packet_size });
-        response.header.checksum = checksum.finish();
+        response.header.checksum = InternetChecksum({ &response, icmp_packet_size }).digest();
 
         adapter->send_packet(packet->bytes());
         adapter->release_packet_buffer(*packet);

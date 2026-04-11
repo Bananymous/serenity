@@ -16,6 +16,7 @@
 #include <Kernel/Tasks/PerformanceManager.h>
 #include <Kernel/Tasks/Process.h>
 #include <Kernel/Tasks/Scheduler.h>
+#include <Kernel/Tasks/WaitQueue.h>
 #include <Kernel/Time/TimeManagement.h>
 #include <Kernel/kstdio.h>
 
@@ -33,7 +34,7 @@ static u32 time_slice_for(Thread const& thread)
 
 READONLY_AFTER_INIT Thread* g_finalizer;
 READONLY_AFTER_INIT WaitQueue* g_finalizer_wait_queue;
-Atomic<bool> g_finalizer_has_work { false };
+SpinlockProtected<bool, LockRank::None> g_finalizer_has_work;
 READONLY_AFTER_INIT static Process* s_colonel_process;
 
 struct ThreadReadyQueue {
@@ -46,9 +47,9 @@ struct ThreadReadyQueues {
     Array<ThreadReadyQueue, count> queues;
 };
 
-static Singleton<SpinlockProtected<ThreadReadyQueues, LockRank::None>> g_ready_queues;
+static Singleton<RecursiveSpinlockProtected<ThreadReadyQueues, LockRank::None>> g_ready_queues;
 
-static SpinlockProtected<TotalTimeScheduled, LockRank::None> g_total_time_scheduled {};
+static RecursiveSpinlockProtected<TotalTimeScheduled, LockRank::None> g_total_time_scheduled {};
 
 static void dump_thread_list(bool = false);
 
@@ -200,7 +201,7 @@ UNMAP_AFTER_INIT void Scheduler::start()
     VERIFY_NOT_REACHED();
 }
 
-void Scheduler::pick_next()
+ScheduleResult Scheduler::pick_next()
 {
     VERIFY_INTERRUPTS_DISABLED();
 
@@ -235,11 +236,24 @@ void Scheduler::pick_next()
     // but since we're still holding the scheduler lock we're still in a critical section
     critical.leave();
 
+    auto* previous_thread = Thread::current();
+
     thread_to_schedule.set_ticks_left(time_slice_for(thread_to_schedule));
-    context_switch(&thread_to_schedule);
+    auto should_yield = context_switch(&thread_to_schedule);
+
+    if (should_yield == ShouldYield::Yes) {
+        return ScheduleResult::YieldAgain;
+    }
+
+    if (previous_thread == &thread_to_schedule) {
+        VERIFY(thread_to_schedule.is_idle_thread());
+        return ScheduleResult::NoRunnableThreadFound;
+    }
+
+    return ScheduleResult::Success;
 }
 
-void Scheduler::yield()
+ScheduleResult Scheduler::yield()
 {
     InterruptDisabler disabler;
 
@@ -251,21 +265,28 @@ void Scheduler::yield()
         // a critical section where we don't want to switch contexts, then
         // delay until exiting the trap or critical section
         Processor::current().invoke_scheduler_async();
-        return;
+        return ScheduleResult::Delayed;
     }
 
-    Scheduler::pick_next();
+    ScheduleResult result { ScheduleResult::NoRunnableThreadFound };
+
+    do {
+        result = pick_next();
+    } while (result == ScheduleResult::YieldAgain);
+
+    return result;
 }
 
-void Scheduler::context_switch(Thread* thread)
+ShouldYield Scheduler::context_switch(Thread* thread)
 {
+    VERIFY(g_scheduler_lock.is_locked_by_current_processor());
     thread->did_schedule();
 
     auto* from_thread = Thread::current();
     VERIFY(from_thread);
 
     if (from_thread == thread)
-        return;
+        return ShouldYield::No;
 
     // If the last process hasn't blocked (still marked as running),
     // mark it as runnable for the next round, unless it's supposed
@@ -301,10 +322,13 @@ void Scheduler::context_switch(Thread* thread)
     enter_current(*from_thread);
     VERIFY(thread == Thread::current());
 
-    {
+    if (!thread->should_die()) {
         SpinlockLocker lock(thread->get_lock());
-        thread->dispatch_one_pending_signal();
+        if (thread->dispatch_one_pending_signal() == DispatchSignalResult::Yield)
+            return ShouldYield::Yes;
     }
+
+    return ShouldYield::No;
 }
 
 void Scheduler::enter_current(Thread& prev_thread)
@@ -376,7 +400,9 @@ UNMAP_AFTER_INIT void Scheduler::initialize()
 
     g_finalizer_wait_queue = new WaitQueue;
 
-    g_finalizer_has_work.store(false, AK::MemoryOrder::memory_order_release);
+    g_finalizer_has_work.with([](auto& has_work) {
+        has_work = false;
+    });
     auto [colonel_process, idle_thread] = MUST(Process::create_kernel_process("colonel"sv, idle_loop, nullptr, 1, Process::RegisterProcess::No));
     s_colonel_process = &colonel_process.leak_ref();
     idle_thread->set_priority(THREAD_PRIORITY_MIN);
@@ -466,28 +492,45 @@ void Scheduler::invoke_async()
     // Since this function is called when leaving critical sections (such
     // as a Spinlock), we need to check if we're not already doing this
     // to prevent recursion
-    if (!Processor::current_in_scheduler())
-        pick_next();
+    if (!Processor::current_in_scheduler()) {
+        ScheduleResult result { ScheduleResult::NoRunnableThreadFound };
+        do {
+            result = pick_next();
+        } while (result == ScheduleResult::YieldAgain);
+    }
 }
 
 void Scheduler::notify_finalizer()
 {
-    if (!g_finalizer_has_work.exchange(true, AK::MemoryOrder::memory_order_acq_rel))
-        g_finalizer_wait_queue->wake_all();
+    g_finalizer_has_work.with([](auto& has_work) { has_work = true; });
+    g_finalizer_wait_queue->notify_all();
 }
 
 void Scheduler::idle_loop(void*)
 {
     auto& proc = Processor::current();
     dbgln("Scheduler[{}]: idle loop running", proc.id());
-    VERIFY(Processor::are_interrupts_enabled());
+
+    // Interrupts have to be disabled during the idle loop to prevent lost wakeups.
+    // If interrupts were enabled between yield() and proc.idle(), we could get an interrupt between those two function calls,
+    // but still go to sleep, even if the interrupt caused a thread to be runnable or notified us of one.
+    InterruptDisabler disabler;
 
     for (;;) {
-        proc.idle_begin();
-        proc.wait_for_interrupt();
-        proc.idle_end();
-        VERIFY_INTERRUPTS_ENABLED();
-        yield();
+        // First, check if there is a runnable thread we can switch to.
+        auto result = yield();
+
+        if (result == ScheduleResult::NoRunnableThreadFound) {
+            // If there is no runnable thread, go to sleep until we get an interrupt.
+
+            // This function causes the processor to go to sleep while interrupts are still disabled.
+            // After going to sleep, it will listen for interrupts, and if it receives one, it will wake up again.
+            // Subsequently, the interrupt handler for the received interrupt will be called.
+            proc.idle();
+
+            // This interrupt might have caused a new thread to become runnable or notified us of one.
+            // So check for runnable threads in the next loop iteration again.
+        }
     }
 }
 

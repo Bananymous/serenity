@@ -105,7 +105,6 @@ ALWAYS_INLINE ErrorOr<void> unveil(nullptr_t, nullptr_t)
 }
 
 #if !defined(AK_OS_BSD_GENERIC)
-ErrorOr<Optional<struct spwd>> getspent();
 ErrorOr<Optional<struct spwd>> getspnam(StringView name);
 #endif
 
@@ -158,9 +157,7 @@ ErrorOr<Optional<struct passwd>> getpwuid(uid_t);
 ErrorOr<Optional<struct group>> getgrent(Span<char> buffer);
 ErrorOr<Optional<struct group>> getgrgid(gid_t);
 
-#if !defined(AK_OS_IOS)
 ErrorOr<void> clock_settime(clockid_t clock_id, struct timespec* ts);
-#endif
 
 ErrorOr<pid_t> posix_spawn(StringView path, posix_spawn_file_actions_t const* file_actions, posix_spawnattr_t const* attr, char* const arguments[], char* const envp[]);
 ErrorOr<pid_t> posix_spawnp(StringView path, posix_spawn_file_actions_t* const file_actions, posix_spawnattr_t* const attr, char* const arguments[], char* const envp[]);
@@ -212,8 +209,9 @@ ErrorOr<void> exec_command(Vector<StringView>& command, bool preserve_env);
 ErrorOr<void> exec(StringView filename, ReadonlySpan<StringView> arguments, SearchInPath, Optional<ReadonlySpan<StringView>> environment = {});
 
 #ifdef AK_OS_SERENITY
-ErrorOr<u32> unshare_create(Kernel::UnshareType type, unsigned flags);
-ErrorOr<void> unshare_attach(Kernel::UnshareType type, unsigned index);
+ErrorOr<unsigned> unshare_open(Kernel::UnshareType type);
+ErrorOr<u32> unshare_create(unsigned fd);
+ErrorOr<void> unshare_enter(Kernel::UnshareType type, u32 index, int flags);
 #endif
 
 ErrorOr<int> socket(int domain, int type, int protocol);

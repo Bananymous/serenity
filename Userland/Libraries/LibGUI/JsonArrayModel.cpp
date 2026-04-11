@@ -11,6 +11,8 @@
 
 namespace GUI {
 
+JsonArrayModel::~JsonArrayModel() = default;
+
 void JsonArrayModel::invalidate()
 {
     auto invalidate_or_error = [this]() -> ErrorOr<void> {
@@ -137,7 +139,7 @@ Variant JsonArrayModel::data(ModelIndex const& index, ModelRole role) const
         if (!data.has_value())
             return "";
         if (data->is_number())
-            return data->serialized<StringBuilder>();
+            return data->as_number();
         return data->as_string();
     }
 

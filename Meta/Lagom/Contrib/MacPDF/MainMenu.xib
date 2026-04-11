@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0" toolsVersion="22505" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none" useAutolayout="YES" customObjectInstantitationMethod="direct">
+<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0" toolsVersion="23727" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none" useAutolayout="YES" customObjectInstantitationMethod="direct">
     <dependencies>
-        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="22505"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="23727"/>
     </dependencies>
     <objects>
         <customObject id="-2" userLabel="File's Owner" customClass="NSApplication">
@@ -670,22 +670,16 @@
                                     <action selector="toggleShowClippingPaths:" target="-1" id="ZXz-gM-52n"/>
                                 </connections>
                             </menuItem>
-                            <menuItem title="Clip Images" state="on" id="os0-En-UkL">
+                            <menuItem title="Apply Clip" state="on" id="os0-En-UkL">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
-                                    <action selector="toggleClipImages:" target="-1" id="bHz-O3-V8K"/>
+                                    <action selector="toggleApplyClip:" target="-1" id="bHz-O3-V8K"/>
                                 </connections>
                             </menuItem>
-                            <menuItem title="Clip Paths" state="on" id="KB8-Ld-jv8">
+                            <menuItem title="Use Constant Alpha" state="on" id="DXr-ru-y6D">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
-                                    <action selector="toggleClipPaths:" target="-1" id="pZu-tJ-RFh"/>
-                                </connections>
-                            </menuItem>
-                            <menuItem title="Clip Text" state="on" id="u58-eB-op8">
-                                <modifierMask key="keyEquivalentModifierMask"/>
-                                <connections>
-                                    <action selector="toggleClipText:" target="-1" id="qxg-tH-KXd"/>
+                                    <action selector="toggleUseConstantAlpha:" target="-1" id="jSg-GC-40X"/>
                                 </connections>
                             </menuItem>
                             <menuItem title="Show Images" state="on" id="ArW-nr-ktv">

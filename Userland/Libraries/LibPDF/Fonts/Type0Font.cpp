@@ -60,16 +60,16 @@ PDFErrorOr<NonnullOwnPtr<CIDFontType0>> CIDFontType0::create(Document* document,
         }
     }
 
-    if (!font_program) {
-        // FIXME: Should we use a fallback font? How common is this for type 0 fonts?
-        return Error::malformed_error("CIDFontType0: missing FontFile3");
-    }
-
     return TRY(adopt_nonnull_own_or_enomem(new (nothrow) CIDFontType0(move(font_program))));
 }
 
 PDFErrorOr<void> CIDFontType0::draw_glyph(Gfx::Painter& painter, Gfx::FloatPoint point, float width, u32 cid, Renderer const& renderer)
 {
+    if (!m_font_program) {
+        // FIXME: Should we use a fallback font? How common is this for type 0 fonts?
+        return Error::malformed_error("CIDFontType0: missing FontFile3");
+    }
+
     // ISO 32000 (PDF 2.0) 9.7.4.2 Glyph selection in CIDFonts
     // "When the CIDFont contains an embedded font program that is represented in the Compact Font Format (CFF),
     //  the FontFile3 entry in the font descriptor (...) shall be either CIDFontType0C or OpenType.
@@ -187,16 +187,16 @@ PDFErrorOr<NonnullOwnPtr<CIDFontType2>> CIDFontType2::create(Document* document,
         font = adopt_ref(*new Gfx::ScaledFont(*ttf_font, point_size, point_size));
     }
 
-    if (!font) {
-        // FIXME: Should we use a fallback font? How common is this for type 0 fonts?
-        return Error::malformed_error("CIDFontType2: missing FontFile2");
-    }
-
     return TRY(adopt_nonnull_own_or_enomem(new (nothrow) CIDFontType2(move(font))));
 }
 
 PDFErrorOr<void> CIDFontType2::draw_glyph(Gfx::Painter& painter, Gfx::FloatPoint point, float width, u32 char_code, Renderer const& renderer)
 {
+    if (!m_font) {
+        // FIXME: Should we use a fallback font? How common is this for type 0 fonts?
+        return Error::malformed_error("CIDFontType2: missing FontFile2");
+    }
+
     // ISO 32000 (PDF 2.0) 9.7.4.2 Glyph selection in CIDFonts
     // "For Type 2, the CIDFont program is actually a TrueType font program, which has no native notion of CIDs.
     //  In a TrueType font program, glyph descriptions are identified by glyph index values.
@@ -231,7 +231,8 @@ PDFErrorOr<void> CIDFontType2::draw_glyph(Gfx::Painter& painter, Gfx::FloatPoint
 
 void CIDFontType2::set_font_size(float font_size)
 {
-    m_font = m_font->scaled_with_size((font_size * POINTS_PER_INCH) / DEFAULT_DPI);
+    if (m_font)
+        m_font = m_font->scaled_with_size((font_size * POINTS_PER_INCH) / DEFAULT_DPI);
 }
 
 Type0Font::Type0Font() = default;
@@ -276,15 +277,47 @@ public:
     }
 };
 
-static PDFErrorOr<NonnullOwnPtr<Type0CMap>> make_cmap(NonnullRefPtr<Object> const& cmap_value)
+class UnimplementedGeneralType0CMap : public Type0CMap {
+public:
+    UnimplementedGeneralType0CMap()
+        : Type0CMap(WritingMode::Horizontal)
+    {
+    }
+
+    virtual PDFErrorOr<NonnullOwnPtr<CIDIterator>> iterate(ReadonlyBytes) const override
+    {
+        return Error::rendering_unsupported_error("Type0 font: support for general type 0 cmaps not yet implemented");
+    }
+};
+
+class UnimplementedNamedType0CMap : public Type0CMap {
+public:
+    UnimplementedNamedType0CMap(DeprecatedFlyString name)
+        : Type0CMap(WritingMode::Horizontal)
+        , m_name(name)
+    {
+    }
+
+    virtual PDFErrorOr<NonnullOwnPtr<CIDIterator>> iterate(ReadonlyBytes) const override
+    {
+        return Error::rendering_unsupported_error("Type0 font: unimplemented named type 0 cmap {}", m_name);
+    }
+
+private:
+    DeprecatedFlyString m_name;
+};
+
+static NonnullOwnPtr<Type0CMap> make_cmap(NonnullRefPtr<Object> const& cmap_value)
 {
     // FIXME: Support arbitrary CMaps
     if (!cmap_value->is<NameObject>())
-        return Error::rendering_unsupported_error("Type0 font: support for general type 0 cmaps not yet implemented");
+        return make<UnimplementedGeneralType0CMap>();
 
+    // FIXME: Add additional encodings from https://github.com/adobe-type-tools/cmap-resources
+    // Spec: https://adobe-type-tools.github.io/font-tech-notes/pdfs/5014.CIDFont_Spec.pdf (5 CMap Tutorial, page 41 onwards)
     auto cmap_name = cmap_value->cast<NameObject>()->name();
     if (cmap_name != CommonNames::IdentityH && cmap_name != CommonNames::IdentityV)
-        return Error::rendering_unsupported_error("Type0 font: unimplemented named type 0 cmap {}", cmap_name);
+        return make<UnimplementedNamedType0CMap>(cmap_name);
 
     WritingMode writing_mode = cmap_name.ends_with("-H"sv) ? WritingMode::Horizontal : WritingMode::Vertical;
 
@@ -297,7 +330,7 @@ PDFErrorOr<void> Type0Font::initialize(Document* document, NonnullRefPtr<DictObj
 
     m_base_font_name = TRY(dict->get_name(document, CommonNames::BaseFont))->name();
 
-    m_cmap = TRY(make_cmap(TRY(dict->get_object(document, CommonNames::Encoding))));
+    m_cmap = make_cmap(TRY(dict->get_object(document, CommonNames::Encoding)));
 
     auto descendant_font_value = TRY(dict->get_array(document, CommonNames::DescendantFonts));
     auto descendant_font = TRY(descendant_font_value->get_dict_at(document, 0));

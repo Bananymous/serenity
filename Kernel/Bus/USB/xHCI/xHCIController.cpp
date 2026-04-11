@@ -1,11 +1,13 @@
 /*
  * Copyright (c) 2024, Idan Horowitz <idan.horowitz@serenityos.org>
- * Copyright (c) 2025, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2025, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <Kernel/Arch/Delay.h>
+#include <Kernel/Arch/MemoryFences.h>
+#include <Kernel/Boot/CommandLine.h>
 #include <Kernel/Bus/USB/USBClasses.h>
 #include <Kernel/Bus/USB/USBHub.h>
 #include <Kernel/Bus/USB/USBRequest.h>
@@ -13,7 +15,7 @@
 #include <Kernel/Bus/USB/xHCI/xHCIInterrupter.h>
 #include <Kernel/Tasks/Process.h>
 
-namespace Kernel::USB {
+namespace Kernel::USB::xHCI {
 
 UNMAP_AFTER_INIT xHCIController::xHCIController(Memory::TypedMapping<u8> registers_mapping)
     : m_registers_mapping(move(registers_mapping))
@@ -155,7 +157,6 @@ ErrorOr<void> xHCIController::initialize()
 
     auto [process, event_handler_thread] = TRY(Process::create_kernel_process("xHCI Controller"sv, [this]() { event_handling_thread(); }));
     event_handler_thread->set_name("xHCI Event Handling"sv);
-    (void)TRY(process->create_kernel_thread("xHCI Hot Plug"sv, [this]() { hot_plug_thread(); }));
     m_process = move(process);
 
     m_large_contexts = m_capability_registers.capability_parameters_1.context_size;
@@ -176,7 +177,8 @@ ErrorOr<void> xHCIController::initialize()
         m_scratchpad_buffers_array_region = TRY(MM.allocate_dma_buffer_pages(MUST(Memory::page_round_up(requested_scratchpad_buffers * sizeof(u64))), "xHCI Scratchpad Buffers Array"sv, Memory::Region::Access::ReadWrite));
         auto* scratchpad_buffers_array = reinterpret_cast<u64*>(m_scratchpad_buffers_array_region->vaddr().as_ptr());
         for (auto i = 0; i < requested_scratchpad_buffers; ++i) {
-            auto page = TRY(MM.allocate_physical_page());
+            auto page = TRY(MM.allocate_physical_page(Memory::MemoryManager::ShouldZeroFill::Yes, nullptr, Memory::MemoryType::NonCacheable));
+
             scratchpad_buffers_array[i] = page->paddr().get();
             TRY(m_scratchpad_buffers.try_append(move(page)));
         }
@@ -184,6 +186,10 @@ ErrorOr<void> xHCIController::initialize()
     } else {
         m_device_context_base_address_array[0] = 0;
     }
+
+    // Ensure the zeroing of the scratchpad buffer pages is visible before the DCBAAP write.
+    store_memory_fence();
+
     auto device_context_base_address_array_pointer = m_device_context_base_address_array_region->physical_page(0)->paddr().get();
     m_operational_registers.device_context_base_address_array_pointer.low = device_context_base_address_array_pointer;
     m_operational_registers.device_context_base_address_array_pointer.high = device_context_base_address_array_pointer >> 32;
@@ -250,7 +256,13 @@ ErrorOr<void> xHCIController::initialize()
     m_runtime_registers.interrupter_registers[0].interrupter_management.interrupt_enabled = 1;
 
     m_using_message_signalled_interrupts = using_message_signalled_interrupts();
-    m_interrupter = TRY(create_interrupter(0));
+
+    if (!kernel_command_line().is_xhci_polling_enabled())
+        m_interrupter = TRY(create_interrupter(0));
+
+    // Fall back to polling if we failed to set up interrupts or xHCI polling was enabled from the command line.
+    if (m_interrupter == nullptr)
+        (void)TRY(m_process->create_kernel_thread("xHCI Poll"sv, [this]() { poll_thread(); }));
 
     return start();
 }
@@ -298,6 +310,8 @@ ErrorOr<void> xHCIController::start()
     m_root_hub = TRY(xHCIRootHub::try_create(*this));
     TRY(m_root_hub->setup({}));
     dmesgln_xhci("Initialized root hub");
+    VERIFY(m_process);
+    (void)TRY(m_process->create_kernel_thread("xHCI Hot Plug"sv, [this]() { hot_plug_thread(); }));
     return {};
 }
 
@@ -330,6 +344,13 @@ void xHCIController::enqueue_command(TransferRequestBlock& transfer_request_bloc
     transfer_request_block.generic.cycle_bit = m_command_ring_producer_cycle_state;
     m_command_ring[m_command_ring_enqueue_index] = transfer_request_block;
 
+    if constexpr (XHCI_VERBOSE_DEBUG) {
+        auto vaddr = VirtualAddress { &m_command_ring[m_command_ring_enqueue_index] };
+        auto paddr = m_command_and_event_rings_region->physical_page(0)->paddr().offset(offsetof(CommandAndEventRings, command_ring) + (m_command_ring_enqueue_index * sizeof(TransferRequestBlock)));
+        dbgln("-> enqueue_command: {} @ {} {}", enum_to_string(m_command_ring[m_command_ring_enqueue_index].generic.transfer_request_block_type), vaddr, paddr);
+        m_command_ring[m_command_ring_enqueue_index].dump("->     "sv);
+    }
+
     m_command_ring_enqueue_index++;
 
     if (m_command_ring_enqueue_index == (command_ring_size - 1)) {
@@ -339,7 +360,7 @@ void xHCIController::enqueue_command(TransferRequestBlock& transfer_request_bloc
         m_command_ring_producer_cycle_state ^= 1;
     }
 
-    atomic_thread_fence(MemoryOrder::memory_order_seq_cst);
+    full_memory_fence();
 
     ring_command_doorbell();
 }
@@ -650,7 +671,12 @@ ErrorOr<void> xHCIController::initialize_device(USB::Device& device)
         dmesgln_xhci("USB Device did not return enough bytes for short device descriptor - Expected {} but got {}", short_device_descriptor_length, transfer_length);
         return EIO;
     }
-    VERIFY(dev_descriptor.descriptor_header.descriptor_type == DESCRIPTOR_TYPE_DEVICE);
+
+    if (dev_descriptor.descriptor_header.descriptor_type != DESCRIPTOR_TYPE_DEVICE) {
+        dmesgln_xhci("USB Device returned incorrect descriptor type for GetDescriptor(Device) request - Expected {:#x} but got {:#x}", DESCRIPTOR_TYPE_DEVICE, dev_descriptor.descriptor_header.descriptor_type);
+        return EIO;
+    }
+
     device.set_max_packet_size<xHCIController>({}, dev_descriptor.max_packet_size);
     if (speed == USB::Device::DeviceSpeed::FullSpeed && dev_descriptor.max_packet_size != 8) {
         control_context->drop_contexts = 0;
@@ -665,7 +691,12 @@ ErrorOr<void> xHCIController::initialize_device(USB::Device& device)
         dmesgln_xhci("USB Device did not return enough bytes for device descriptor - Expected {} but got {}", sizeof(USBDeviceDescriptor), transfer_length);
         return EIO;
     }
-    VERIFY(dev_descriptor.descriptor_header.descriptor_type == DESCRIPTOR_TYPE_DEVICE);
+
+    if (dev_descriptor.descriptor_header.descriptor_type != DESCRIPTOR_TYPE_DEVICE) {
+        dmesgln_xhci("USB Device returned incorrect descriptor type for GetDescriptor(Device) request - Expected {:#x} but got {:#x}", DESCRIPTOR_TYPE_DEVICE, dev_descriptor.descriptor_header.descriptor_type);
+        return EIO;
+    }
+
     device.set_descriptor<xHCIController>({}, dev_descriptor);
 
     // If the device is a hub:
@@ -694,7 +725,7 @@ ErrorOr<void> xHCIController::initialize_device(USB::Device& device)
 
     // Fetch the configuration descriptors from the device
     auto& configurations = device.configurations<xHCIController>({});
-    configurations.ensure_capacity(dev_descriptor.num_configurations);
+    TRY(configurations.try_ensure_capacity(dev_descriptor.num_configurations));
     for (u8 configuration = 0u; configuration < dev_descriptor.num_configurations; configuration++) {
         USBConfigurationDescriptor configuration_descriptor;
         transfer_length = TRY(device.control_transfer(USB_REQUEST_TRANSFER_DIRECTION_DEVICE_TO_HOST, USB_REQUEST_GET_DESCRIPTOR, (DESCRIPTOR_TYPE_CONFIGURATION << 8u) | configuration, 0, sizeof(USBConfigurationDescriptor), &configuration_descriptor));
@@ -727,12 +758,21 @@ ErrorOr<void> xHCIController::enqueue_transfer(u8 slot, u8 endpoint, Pipe::Direc
         return ENOBUFS;
     endpoint_ring.free_transfer_request_blocks -= transfer_request_blocks.size();
 
+    dbgln_if(XHCI_VERBOSE_DEBUG, "-> enqueue_transfer slot={} endpoint={} dir={}:", slot, endpoint, to_underlying(direction));
+
     auto* ring_memory = endpoint_ring.ring_vaddr();
     auto first_trb_index = endpoint_ring.enqueue_index;
     auto last_trb_index = 0u;
     for (auto i = 0u; i < transfer_request_blocks.size(); i++) {
         transfer_request_blocks[i].generic.cycle_bit = endpoint_ring.producer_cycle_state ^ (i == 0);
         ring_memory[endpoint_ring.enqueue_index] = transfer_request_blocks[i];
+
+        if constexpr (XHCI_VERBOSE_DEBUG) {
+            auto vaddr = VirtualAddress { &ring_memory[endpoint_ring.enqueue_index] };
+            auto paddr = PhysicalAddress { endpoint_ring.ring_paddr() + (endpoint_ring.enqueue_index * sizeof(TransferRequestBlock)) };
+            dbgln("->     {}: {} @ {} {}", i, enum_to_string(ring_memory[endpoint_ring.enqueue_index].generic.transfer_request_block_type), vaddr, paddr);
+            ring_memory[endpoint_ring.enqueue_index].dump("->         "sv);
+        }
 
         last_trb_index = endpoint_ring.enqueue_index;
         endpoint_ring.enqueue_index++;
@@ -750,11 +790,11 @@ ErrorOr<void> xHCIController::enqueue_transfer(u8 slot, u8 endpoint, Pipe::Direc
     pending_transfer.end_index = last_trb_index;
     endpoint_ring.pending_transfers.append(pending_transfer);
 
-    atomic_thread_fence(MemoryOrder::memory_order_seq_cst);
+    full_memory_fence();
 
     ring_memory[first_trb_index].generic.cycle_bit ^= 1;
 
-    atomic_thread_fence(MemoryOrder::memory_order_seq_cst);
+    full_memory_fence();
 
     ring_endpoint_doorbell(slot, endpoint, direction);
 
@@ -844,7 +884,7 @@ ErrorOr<size_t> xHCIController::submit_control_transfer(Transfer& transfer)
     return transfer.transfer_data_size() - pending_transfer.remainder;
 }
 
-ErrorOr<Vector<xHCIController::TransferRequestBlock>> xHCIController::prepare_normal_transfer(Transfer& transfer)
+ErrorOr<Vector<TransferRequestBlock>> xHCIController::prepare_normal_transfer(Transfer& transfer)
 {
     auto const& device = transfer.pipe().device();
     auto const slot = device.controller_identifier();
@@ -1274,160 +1314,6 @@ void xHCIController::handle_interrupt(u16 interrupter_id)
     }
 }
 
-StringView xHCIController::enum_to_string(TransferRequestBlock::CompletionCode completion_code)
-{
-    switch (completion_code) {
-    case TransferRequestBlock::CompletionCode::Invalid:
-        return "Invalid"sv;
-    case TransferRequestBlock::CompletionCode::Success:
-        return "Success"sv;
-    case TransferRequestBlock::CompletionCode::Data_Buffer_Error:
-        return "Data Buffer Error"sv;
-    case TransferRequestBlock::CompletionCode::Babble_Detected_Error:
-        return "Babble Detected Error"sv;
-    case TransferRequestBlock::CompletionCode::USB_Transaction_Error:
-        return "USB Transaction Error"sv;
-    case TransferRequestBlock::CompletionCode::TRB_Error:
-        return "TRB Error"sv;
-    case TransferRequestBlock::CompletionCode::Stall_Error:
-        return "Stall Error"sv;
-    case TransferRequestBlock::CompletionCode::Resource_Error:
-        return "Resource Error"sv;
-    case TransferRequestBlock::CompletionCode::Bandwidth_Error:
-        return "Bandwidth Error"sv;
-    case TransferRequestBlock::CompletionCode::No_Slots_Available_Error:
-        return "No Slots Available Error"sv;
-    case TransferRequestBlock::CompletionCode::Invalid_Stream_Type_Error:
-        return "Invalid Stream Type Error"sv;
-    case TransferRequestBlock::CompletionCode::Slot_Not_Enabled_Error:
-        return "Slot Not Enabled Error"sv;
-    case TransferRequestBlock::CompletionCode::Endpoint_Not_Enabled_Error:
-        return "Endpoint Not Enabled Error"sv;
-    case TransferRequestBlock::CompletionCode::Short_Packet:
-        return "Short Packet"sv;
-    case TransferRequestBlock::CompletionCode::Ring_Underrun:
-        return "Ring Underrun"sv;
-    case TransferRequestBlock::CompletionCode::Ring_Overrun:
-        return "Ring Overrun"sv;
-    case TransferRequestBlock::CompletionCode::VF_Event_Ring_Full_Error:
-        return "VF Event Ring Full Error"sv;
-    case TransferRequestBlock::CompletionCode::Parameter_Error:
-        return "Parameter Error"sv;
-    case TransferRequestBlock::CompletionCode::Bandwidth_Overrun_Error:
-        return "Bandwidth Overrun Error"sv;
-    case TransferRequestBlock::CompletionCode::Context_State_Error:
-        return "Context State Error"sv;
-    case TransferRequestBlock::CompletionCode::No_Ping_Response_Error:
-        return "No Ping Response Error"sv;
-    case TransferRequestBlock::CompletionCode::Event_Ring_Full_Error:
-        return "Event Ring Full Error"sv;
-    case TransferRequestBlock::CompletionCode::Incompatible_Device_Error:
-        return "Incompatible Device Error"sv;
-    case TransferRequestBlock::CompletionCode::Missed_Service_Error:
-        return "Missed Service Error"sv;
-    case TransferRequestBlock::CompletionCode::Command_Ring_Stopped:
-        return "Command Ring Stopped"sv;
-    case TransferRequestBlock::CompletionCode::Command_Aborted:
-        return "Command Aborted"sv;
-    case TransferRequestBlock::CompletionCode::Stopped:
-        return "Stopped"sv;
-    case TransferRequestBlock::CompletionCode::Stopped_Length_Invalid:
-        return "Stopped Length Invalid"sv;
-    case TransferRequestBlock::CompletionCode::Stopped_Short_Packet:
-        return "Stopped Short Packet"sv;
-    case TransferRequestBlock::CompletionCode::Max_Exit_Latency_Too_Large_Error:
-        return "Max Exit Latency Too Large Error"sv;
-    case TransferRequestBlock::CompletionCode::Isoch_Buffer_Overrun:
-        return "Isoch Buffer Overrun"sv;
-    case TransferRequestBlock::CompletionCode::Event_Lost_Error:
-        return "Event Lost Error"sv;
-    case TransferRequestBlock::CompletionCode::Undefined_Error:
-        return "Undefined Error"sv;
-    case TransferRequestBlock::CompletionCode::Invalid_Stream_ID_Error:
-        return "Invalid Stream ID Error"sv;
-    case TransferRequestBlock::CompletionCode::Secondary_Bandwidth_Error:
-        return "Secondary Bandwidth Error"sv;
-    case TransferRequestBlock::CompletionCode::Split_Transaction_Error:
-        return "Split Transaction Error"sv;
-    default:
-        VERIFY_NOT_REACHED();
-    }
-}
-
-StringView xHCIController::enum_to_string(TransferRequestBlock::TRBType trb_type)
-{
-    switch (trb_type) {
-    case TransferRequestBlock::TRBType::Normal:
-        return "Normal"sv;
-    case TransferRequestBlock::TRBType::Setup_Stage:
-        return "Setup Stage"sv;
-    case TransferRequestBlock::TRBType::Data_Stage:
-        return "Data Stage"sv;
-    case TransferRequestBlock::TRBType::Status_Stage:
-        return "Status Stage"sv;
-    case TransferRequestBlock::TRBType::Isoch:
-        return "Isoch"sv;
-    case TransferRequestBlock::TRBType::Link:
-        return "Link"sv;
-    case TransferRequestBlock::TRBType::Event_Data:
-        return "Event Data"sv;
-    case TransferRequestBlock::TRBType::No_Op:
-        return "No Op"sv;
-    case TransferRequestBlock::TRBType::Enable_Slot_Command:
-        return "Enable Slot Command"sv;
-    case TransferRequestBlock::TRBType::Disable_Slot_Command:
-        return "Disable Slot Command"sv;
-    case TransferRequestBlock::TRBType::Address_Device_Command:
-        return "Address Device Command"sv;
-    case TransferRequestBlock::TRBType::Configure_Endpoint_Command:
-        return "Configure Endpoint Command"sv;
-    case TransferRequestBlock::TRBType::Evaluate_Context_Command:
-        return "Evaluate Context Command"sv;
-    case TransferRequestBlock::TRBType::Reset_Endpoint_Command:
-        return "Reset Endpoint Command"sv;
-    case TransferRequestBlock::TRBType::Stop_Endpoint_Command:
-        return "Stop Endpoint Command"sv;
-    case TransferRequestBlock::TRBType::Set_TR_Dequeue_Pointer_Command:
-        return "Set TR Dequeue Pointer Command"sv;
-    case TransferRequestBlock::TRBType::Reset_Device_Command:
-        return "Reset Device Command"sv;
-    case TransferRequestBlock::TRBType::Force_Event_Command:
-        return "Force Event Command"sv;
-    case TransferRequestBlock::TRBType::Negotiate_Bandwidth_Command:
-        return "Negotiate Bandwidth Command"sv;
-    case TransferRequestBlock::TRBType::Set_Latency_Tolerance_Value_Command:
-        return "Set Latency Tolerance Value Command"sv;
-    case TransferRequestBlock::TRBType::Get_Port_Bandwidth_Command:
-        return "Get Port Bandwidth Command"sv;
-    case TransferRequestBlock::TRBType::Force_Header_Command:
-        return "Force Header Command"sv;
-    case TransferRequestBlock::TRBType::No_Op_Command:
-        return "No Op Command"sv;
-    case TransferRequestBlock::TRBType::Get_Extended_Property_Command:
-        return "Get Extended Property Command"sv;
-    case TransferRequestBlock::TRBType::Set_Extended_Property_Command:
-        return "Set Extended Property Command"sv;
-    case TransferRequestBlock::TRBType::Transfer_Event:
-        return "Transfer Event"sv;
-    case TransferRequestBlock::TRBType::Command_Completion_Event:
-        return "Command Completion Event"sv;
-    case TransferRequestBlock::TRBType::Port_Status_Change_Event:
-        return "Port Status Change Event"sv;
-    case TransferRequestBlock::TRBType::Bandwidth_Request_Event:
-        return "Bandwidth Request Event"sv;
-    case TransferRequestBlock::TRBType::Doorbell_Event:
-        return "Doorbell Event"sv;
-    case TransferRequestBlock::TRBType::Host_Controller_Event:
-        return "Host Controller Event"sv;
-    case TransferRequestBlock::TRBType::Device_Notification_Event:
-        return "Device Notification Event"sv;
-    case TransferRequestBlock::TRBType::Microframe_Index_Wrap_Event:
-        return "Microframe Index Wrap Event"sv;
-    default:
-        VERIFY_NOT_REACHED();
-    }
-}
-
 void xHCIController::handle_transfer_event(TransferRequestBlock const& transfer_request_block)
 {
     auto slot = transfer_request_block.transfer_event.slot_id;
@@ -1469,7 +1355,7 @@ void xHCIController::handle_transfer_event(TransferRequestBlock const& transfer_
             auto& sync_pending_transfer = static_cast<SyncPendingTransfer&>(pending_transfer);
             sync_pending_transfer.completion_code = transfer_request_block.transfer_event.completion_code;
             sync_pending_transfer.remainder = transfer_request_block.transfer_event.transfer_request_block_transfer_length;
-            atomic_thread_fence(MemoryOrder::memory_order_seq_cst);
+            full_memory_fence();
             sync_pending_transfer.wait_queue.wake_all();
         } else {
             auto& periodic_pending_transfer = static_cast<PeriodicPendingTransfer&>(pending_transfer);
@@ -1486,12 +1372,29 @@ void xHCIController::event_handling_thread()
 {
     while (!Process::current().is_dying()) {
         m_event_queue.wait_forever("xHCI"sv);
+
+        bool header_printed = false;
+
         // Handle up to ring-size events each time
         for (auto i = 0u; i < event_ring_segment_size; ++i) {
             // If the Cycle bit of the Event TRB pointed to by the Event Ring Dequeue Pointer equals CCS, then the Event TRB is a valid event,
             // software processes it and advances the Event Ring Dequeue Pointer.
             if (m_event_ring_segment[m_event_ring_dequeue_index].generic.cycle_bit != m_event_ring_consumer_cycle_state)
                 break;
+
+            if constexpr (XHCI_VERBOSE_DEBUG) {
+                auto const& trb = m_event_ring_segment[m_event_ring_dequeue_index];
+
+                if (!header_printed) {
+                    dbgln("<- Event(s):");
+                    header_printed = true;
+                }
+
+                auto vaddr = VirtualAddress { &trb };
+                auto paddr = m_command_and_event_rings_region->physical_page(0)->paddr().offset(offsetof(CommandAndEventRings, event_ring_segment) + (m_event_ring_dequeue_index * sizeof(TransferRequestBlock)));
+                dbgln("<-     {}: {} @ {} {}", i, enum_to_string(trb.generic.transfer_request_block_type), vaddr, paddr);
+                trb.dump("<-         "sv);
+            }
 
             auto event_type = m_event_ring_segment[m_event_ring_dequeue_index].generic.transfer_request_block_type;
             switch (event_type) {
@@ -1502,7 +1405,7 @@ void xHCIController::event_handling_thread()
                 // We only process a single command at a time (and the caller holds the m_command_lock throughout), so we only ever have a single
                 // active command result.
                 m_command_result_transfer_request_block = m_event_ring_segment[m_event_ring_dequeue_index];
-                atomic_thread_fence(MemoryOrder::memory_order_seq_cst);
+                full_memory_fence();
                 m_command_completion_queue.wake_all();
                 break;
             case TransferRequestBlock::TRBType::Port_Status_Change_Event:
@@ -1531,11 +1434,22 @@ void xHCIController::event_handling_thread()
 void xHCIController::hot_plug_thread()
 {
     while (!Process::current().is_dying()) {
-        if (m_root_hub)
-            m_root_hub->check_for_port_updates();
-
+        m_root_hub->check_for_port_updates();
         (void)Thread::current()->sleep(Duration::from_seconds(1));
     }
+    Thread::current()->exit();
+    VERIFY_NOT_REACHED();
+}
+
+void xHCIController::poll_thread()
+{
+    static constexpr auto poll_interval = Duration::from_milliseconds(3);
+
+    while (!Process::current().is_dying()) {
+        handle_interrupt(0);
+        (void)Thread::current()->sleep(poll_interval);
+    }
+
     Thread::current()->exit();
     VERIFY_NOT_REACHED();
 }

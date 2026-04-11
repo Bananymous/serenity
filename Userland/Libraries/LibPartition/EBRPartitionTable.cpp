@@ -29,7 +29,7 @@ void EBRPartitionTable::search_extended_partition(MBRPartitionTable& checked_ebr
 
     // If we are pointed to an invalid logical partition, something is seriously wrong.
     VERIFY(checked_logical_partition.has_value());
-    m_partitions.append(checked_logical_partition.value().offset(current_block_offset));
+    m_partitions.try_append(checked_logical_partition.value().offset(current_block_offset)).release_value_but_fixme_should_propagate_errors();
     if (!checked_ebr.contains_ebr())
         return;
     current_block_offset += checked_ebr.partition(1).value().start_block();
@@ -49,9 +49,9 @@ EBRPartitionTable::EBRPartitionTable(PartitionableDevice device)
 
     VERIFY(partitions_count() == 0);
 
-    auto& header = this->header();
+    auto const& header = this->header();
     for (size_t index = 0; index < 4; index++) {
-        auto& entry = header.entry[index];
+        auto entry = header.entry[index];
         // Start enumerating all logical partitions
         if (entry.type == 0xf) {
             auto checked_ebr = MBRPartitionTable::try_to_initialize(m_device.clone_unowned(), entry.offset);

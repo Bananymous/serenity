@@ -6,14 +6,12 @@
 
 #include <AK/Format.h>
 #include <AK/StdLibExtras.h>
+#include <Kernel/Arch/MemoryFences.h>
 #include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/Storage/SD/Commands.h>
 #include <Kernel/Devices/Storage/SD/SDHostController.h>
 #include <Kernel/Devices/Storage/StorageManagement.h>
 #include <Kernel/Time/TimeManagement.h>
-#if ARCH(AARCH64)
-#    include <Kernel/Arch/aarch64/RPi/SDHostController.h>
-#endif
 
 namespace Kernel {
 
@@ -39,6 +37,13 @@ constexpr u32 data_transfer_width_4bit = 1 << 1;
 constexpr u32 high_speed_enable = 1 << 2;
 constexpr u32 dma_select_adma2_32 = 0b10 << 3;
 constexpr u32 dma_select_adma2_64 = 0b11 << 3;
+
+// In sub-register "Power Control"
+// SD Bus Voltage Select for VDD1 = 3.3V, SD Bus Power for VDD1 = On
+constexpr u32 sd_vdd1_bus_voltage_select_and_power_mask = 0xf << 8;
+constexpr u32 sd_vdd1_bus_voltage_select_3v0 = 0b1100 << 8;
+constexpr u32 sd_vdd1_bus_voltage_select_3v3 = 0b1110 << 8;
+constexpr u32 sd_vdd1_bus_power = 0b1 << 8;
 
 // In "m_registers->host_configuration_1"
 // In sub-register "Clock Control"
@@ -114,8 +119,7 @@ ErrorOr<void> SDHostController::initialize()
 void SDHostController::try_enable_dma()
 {
     if (m_registers->capabilities.adma2) {
-        // FIXME: Synchronize DMA buffer accesses correctly and set the MemoryType to NonCacheable.
-        auto maybe_dma_buffer = MM.allocate_dma_buffer_pages(dma_region_size, "SDHC DMA Buffer"sv, Memory::Region::Access::ReadWrite, Memory::MemoryType::IO);
+        auto maybe_dma_buffer = MM.allocate_dma_buffer_pages(dma_region_size, "SDHC DMA Buffer"sv, Memory::Region::Access::ReadWrite);
         if (maybe_dma_buffer.is_error()) {
             dmesgln("Could not allocate DMA pages for SDHC: {}", maybe_dma_buffer.error());
         } else {
@@ -144,6 +148,36 @@ ErrorOr<NonnullRefPtr<SDMemoryCard>> SDHostController::try_initialize_inserted_c
 {
     if (!is_card_inserted())
         return ENODEV;
+
+    // SDHC 3.3 "SD Bus Power Control"
+    // 1. By reading the Capabilities register, get the support voltage of the Host Controller.
+    u32 maximum_supported_bus_voltage_select = 0;
+    if (m_registers->capabilities.three_point_three_volt == 1) {
+        maximum_supported_bus_voltage_select = sd_vdd1_bus_voltage_select_3v3;
+    } else if (m_registers->capabilities.three_point_zero_volt == 1) {
+        maximum_supported_bus_voltage_select = sd_vdd1_bus_voltage_select_3v0;
+    } else {
+        // FIXME: Support other voltages. This requires changes to the handling of CMD8 and ACMD41.
+        dbgln("FIXME: Support voltages other than 3.3V/3.0V");
+        return ENOTSUP;
+    }
+
+    // 2. Set SD Bus Voltage Select in the Power Control register with maximum voltage that the Host
+    //    Controller supports.
+    // 3. Set SD Bus Power in the Power Control register to 1.
+    m_registers->host_configuration_0 = (m_registers->host_configuration_0 & ~sd_vdd1_bus_voltage_select_and_power_mask) | maximum_supported_bus_voltage_select | sd_vdd1_bus_power;
+
+    // 4. Get the OCR value of all function internal of SD card.
+    // (This is done when we get the ACMD41 response.)
+
+    // FIXME: 5. Judge whether SD Bus voltage needs to be changed or not. In case where SD Bus voltage
+    //           needs to be changed, go to step (6). In case where SD Bus voltage does not need to be
+    //           changed, go to 'End'.
+    // FIXME: 6. Set SD Bus Power in the Power Control register to 0 for clearing this bit. The card requires
+    //           voltage rising from 0 volt to detect it correctly. The Host Driver shall clear SD Bus Power before
+    //           changing voltage by setting SD Bus Voltage Select.
+    // FIXME: 7. Set SD Bus Voltage Select in the Power Control register.
+    // FIXME: 8. Set SD Bus Power in the Power Control register to 1.
 
     // PLSS 4.2: "Card Identification Mode"
     // "After power-on ...the cards are initialized with ... 400KHz clock frequency."
@@ -231,10 +265,25 @@ ErrorOr<NonnullRefPtr<SDMemoryCard>> SDHostController::try_initialize_inserted_c
     auto send_csd_response = TRY(wait_for_response());
     auto csd = bit_cast<SD::CardSpecificDataRegister>(send_csd_response.response);
 
-    u32 block_count = (csd.device_size + 1) * (1 << (csd.device_size_multiplier + 2));
-    u32 block_size = (1 << csd.max_read_data_block_length);
-    u64 capacity = static_cast<u64>(block_count) * block_size;
-    u64 card_capacity_in_blocks = capacity / block_len;
+    u64 card_capacity_in_blocks = 0;
+    if (csd.csd_structure == 0) {
+        // SDSC card
+
+        // PLSS 5.3.2: "CSD Register (CSD Version 1.0)" "C_SIZE"
+        u32 block_count = (csd.v1p0.device_size + 1) * (1 << (csd.v1p0.device_size_multiplier + 2)); // "BLOCKNR" in spec
+        u32 block_size = (1 << csd.v1p0.max_read_data_block_length);                                 // "BLOCK_LEN" in spec
+        u64 capacity = static_cast<u64>(block_count) * block_size;                                   // "memory capacity" in spec
+        card_capacity_in_blocks = capacity / block_len;
+    } else if (csd.csd_structure == 1) {
+        // SDHC or SDXC card
+
+        // PLSS 5.3.3 "CSD Register (CSD Version 2.0)" "C_SIZE"
+        u64 capacity = (csd.v2p0.device_size + 1) * (512 * KiB); // "memory capacity" in spec
+        card_capacity_in_blocks = capacity / block_len;
+    } else {
+        dbgln("SDHC: Unsupported CSD structure version: {}", csd.csd_structure);
+        return ENOTSUP;
+    }
 
     if (m_registers->capabilities.high_speed) {
         dbgln("SDHC: Enabling High Speed mode");
@@ -519,7 +568,6 @@ ErrorOr<void> SDHostController::sd_clock_frequency_change(u32 new_frequency)
 
 ErrorOr<void> SDHostController::reset_host_controller()
 {
-    m_registers->host_configuration_0 = 0;
     m_registers->host_configuration_1 = m_registers->host_configuration_1 | software_reset_for_all;
     if (!retry_with_timeout(
             [&] {
@@ -821,6 +869,10 @@ ErrorOr<void> SDHostController::transfer_blocks_adma2(u32 block_address, u32 blo
             .reserved3 = 0
         };
 
+        // Ensure that all data written to the DMA buffer is visible before the command register write.
+        // This fence is even needed for card to host transfers since we always write a descriptor table to the buffer.
+        store_memory_fence();
+
         // (7) Set the value to the Command register.
         //     Note: When writing to the upper byte [3] of the Command register, the SD command is issued
         //     and DMA is started.
@@ -867,8 +919,12 @@ ErrorOr<void> SDHostController::transfer_blocks_adma2(u32 block_address, u32 blo
 
         // Copy the read data to the correct memory location
         // FIXME: As described above, we may be able to target the destination buffer directly
-        if (direction == SD::DataTransferDirection::CardToHost)
+        if (direction == SD::DataTransferDirection::CardToHost) {
+            // Ensure that we only start reading from the DMA buffer after the transfer is finished,
+            // i.e. after we read the transfer complete bit.
+            load_memory_fence();
             TRY(out.write(bit_cast<void const*>(adma_dma_region_virtual), host_offset, blocks_transferred * block_len));
+        }
 
         blocks_transferred_total += blocks_transferred;
         host_offset = card_offset;

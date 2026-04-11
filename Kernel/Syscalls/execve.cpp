@@ -424,10 +424,15 @@ void Process::clear_signal_handlers_for_exec()
 }
 
 ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_description, Vector<NonnullOwnPtr<KString>> arguments, Vector<NonnullOwnPtr<KString>> environment,
-    RefPtr<OpenFileDescription> interpreter_description, Thread*& new_main_thread, InterruptsState& previous_interrupts_state, Elf_Ehdr const& main_program_header, Optional<size_t> minimum_stack_size)
+    RefPtr<OpenFileDescription> interpreter_description, Thread*& new_main_thread, InterruptsState& previous_interrupts_state, Elf_Ehdr const& main_program_header, ProcessEventType event_type, Optional<size_t> minimum_stack_size)
 {
     VERIFY(is_user_process());
     VERIFY(!Processor::in_critical());
+
+    // Make sure we eventually return to caller process address space
+    ScopeGuard guard = [] {
+        Memory::MemoryManager::enter_process_address_space(Process::current());
+    };
     auto main_program_metadata = main_program_description->metadata();
     // NOTE: Don't allow running SUID binaries at all if we are in a jail.
     if (Process::current().is_jailed() && (main_program_metadata.is_setuid() || main_program_metadata.is_setgid()))
@@ -453,7 +458,6 @@ ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_d
         m_space.with([&](auto& space) {
             space = old_space.release_nonnull();
         });
-        Memory::MemoryManager::enter_process_address_space(*this);
     });
 
     auto load_result = TRY(load(new_space, main_program_description, interpreter_description, main_program_header, minimum_stack_size));
@@ -625,6 +629,14 @@ ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_d
     previous_interrupts_state = Processor::interrupts_state();
     Processor::disable_interrupts();
 
+    // If the user requested unshares to be entered after exec(), do so now.
+    // It is done by replacing the resources - detaching from the old ones and
+    // entering the new ones, like how one would expect it to happen during the
+    // unshare_enter syscall.
+    m_exec_vfs_root_context.replace_resource(*this);
+    m_exec_hostname_context.replace_resource(*this);
+    m_exec_scoped_process_list.replace_resource(*this);
+
     // NOTE: Be careful to not trigger any page faults below!
 
     with_mutable_protected_data([&](auto& protected_data) {
@@ -649,7 +661,14 @@ ErrorOr<void> Process::do_exec(NonnullRefPtr<OpenFileDescription> main_program_d
 
     {
         TemporaryChange profiling_disabler(m_profiling, was_profiling);
-        PerformanceManager::add_process_exec_event(*this);
+        switch (event_type) {
+        case ProcessEventType::Exec:
+            PerformanceManager::add_process_exec_event(*this);
+            break;
+        case ProcessEventType::Create:
+            PerformanceManager::add_process_created_event(*this);
+            break;
+        }
     }
 
     u32 lock_count_to_restore;
@@ -869,7 +888,7 @@ ErrorOr<RefPtr<OpenFileDescription>> Process::find_elf_interpreter_for_executabl
     return interpreter_description;
 }
 
-ErrorOr<void> Process::exec(NonnullOwnPtr<KString> path, Vector<NonnullOwnPtr<KString>> arguments, Vector<NonnullOwnPtr<KString>> environment, Thread*& new_main_thread, InterruptsState& previous_interrupts_state, int recursion_depth)
+ErrorOr<void> Process::exec(NonnullOwnPtr<KString> path, Vector<NonnullOwnPtr<KString>> arguments, Vector<NonnullOwnPtr<KString>> environment, Thread*& new_main_thread, InterruptsState& previous_interrupts_state, ProcessEventType event_type, int recursion_depth)
 {
     if (recursion_depth > 2) {
         dbgln("exec({}): SHENANIGANS! recursed too far trying to find #! interpreter", path);
@@ -913,7 +932,7 @@ ErrorOr<void> Process::exec(NonnullOwnPtr<KString> path, Vector<NonnullOwnPtr<KS
         auto shebang_path = TRY(shebang_words.first()->try_clone());
         arguments[0] = move(path);
         TRY(arguments.try_prepend(move(shebang_words)));
-        return exec(move(shebang_path), move(arguments), move(environment), new_main_thread, previous_interrupts_state, ++recursion_depth);
+        return exec(move(shebang_path), move(arguments), move(environment), new_main_thread, previous_interrupts_state, event_type, ++recursion_depth);
     }
 
     // #2) ELF32 for i386
@@ -929,7 +948,20 @@ ErrorOr<void> Process::exec(NonnullOwnPtr<KString> path, Vector<NonnullOwnPtr<KS
 
     Optional<size_t> minimum_stack_size {};
     auto interpreter_description = TRY(find_elf_interpreter_for_executable(*description, path->view(), *main_program_header, metadata.size, minimum_stack_size));
-    return do_exec(move(description), move(arguments), move(environment), move(interpreter_description), new_main_thread, previous_interrupts_state, *main_program_header, minimum_stack_size);
+    TRY(do_exec(move(description), move(arguments), move(environment), move(interpreter_description), new_main_thread, previous_interrupts_state, *main_program_header, event_type, minimum_stack_size));
+
+    VERIFY_INTERRUPTS_DISABLED();
+    VERIFY(Processor::in_critical() == 1);
+
+    auto* current_thread = Thread::current();
+    if (current_thread != new_main_thread) {
+        // NOTE: This code path is taken in the non-sys$execve case, i.e when the kernel spawns
+        //       a userspace process directly (such as /bin/init on startup) or during sys$posix_spawn.
+        Processor::restore_interrupts_state(previous_interrupts_state);
+        Processor::leave_critical();
+    }
+
+    return {};
 }
 
 ErrorOr<FlatPtr> Process::sys$execve(Userspace<Syscall::SC_execve_params const*> user_params)
@@ -991,24 +1023,17 @@ ErrorOr<FlatPtr> Process::sys$execve(Userspace<Syscall::SC_execve_params const*>
     VERIFY(Processor::in_critical());
 
     auto* current_thread = Thread::current();
-    if (current_thread == new_main_thread) {
-        // We need to enter the scheduler lock before changing the state
-        // and it will be released after the context switch into that
-        // thread. We should also still be in our critical section
-        VERIFY(!g_scheduler_lock.is_locked_by_current_processor());
-        VERIFY(Processor::in_critical() == 1);
-        g_scheduler_lock.lock();
-        current_thread->set_state(Thread::State::Running);
-        Processor::assume_context(*current_thread, previous_interrupts_state);
-        VERIFY_NOT_REACHED();
-    }
+    VERIFY(current_thread == new_main_thread);
 
-    // NOTE: This code path is taken in the non-syscall case, i.e when the kernel spawns
-    //       a userspace process directly (such as /bin/SystemServer on startup)
-
-    Processor::restore_interrupts_state(previous_interrupts_state);
-    Processor::leave_critical();
-    return 0;
+    // We need to enter the scheduler lock before changing the state
+    // and it will be released after the context switch into that
+    // thread. We should also still be in our critical section
+    VERIFY(!g_scheduler_lock.is_locked_by_current_processor());
+    VERIFY(Processor::in_critical() == 1);
+    g_scheduler_lock.lock();
+    VERIFY(current_thread->state() == Thread::State::Running);
+    Processor::assume_context(*current_thread, previous_interrupts_state);
+    VERIFY_NOT_REACHED();
 }
 
 }

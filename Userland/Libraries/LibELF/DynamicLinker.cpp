@@ -37,6 +37,10 @@
 #include <syscall.h>
 #include <unistd.h>
 
+#if ARCH(RISCV64)
+#    include <LibELF/Arch/riscv64/ExtensionBitmask.h>
+#endif
+
 namespace ELF {
 
 static ByteString s_main_program_path;
@@ -606,11 +610,6 @@ static void __call_fini_functions()
                 (*fini_end)();
             }
         }
-
-        if (object->has_fini_section()) {
-            auto fini_function = object->fini_section_function();
-            (fini_function)();
-        }
     }
 }
 
@@ -668,6 +667,10 @@ EntryPointFunction ELF::DynamicLinker::linker_main(ByteString&& main_program_pat
     define_magic_function("__dlsym"sv, __dlsym);
     define_magic_function("__environ_value"sv, __environ_value);
     define_magic_function("__free_tls_region"sv, __free_tls_region);
+
+#if ARCH(RISCV64)
+    define_magic_function("__get_riscv_feature_bits"sv, __get_riscv_feature_bits);
+#endif
 
     char* raw_current_directory = getcwd(nullptr, 0);
     s_cwd = raw_current_directory;

@@ -13,10 +13,6 @@ elseif("${SERENITY_ARCH}" STREQUAL "riscv64")
     set(KERNEL_ARCH riscv64)
 endif()
 
-set(KERNEL_HEAP_SOURCES
-    Heap/kmalloc.cpp
-)
-
 set(KERNEL_SOURCES
     Arch/init.cpp
     Arch/DeferredCallPool.cpp
@@ -24,6 +20,8 @@ set(KERNEL_SOURCES
     Arch/Processor.cpp
     Arch/TrapFrame.cpp
     Boot/CommandLine.cpp
+    Bus/I2C/Controller/OpenCoresI2CController.cpp
+    Bus/I2C/Drivers/HID.cpp
     Bus/PCI/Controller/HostController.cpp
     Bus/PCI/Controller/MemoryBackedHostBridge.cpp
     Bus/PCI/Controller/VolumeManagementDevice.cpp
@@ -34,6 +32,7 @@ set(KERNEL_SOURCES
     Bus/USB/EHCI/EHCIController.cpp
     Bus/USB/UHCI/UHCIController.cpp
     Bus/USB/UHCI/UHCIRootHub.cpp
+    Bus/USB/xHCI/DataStructures.cpp
     Bus/USB/xHCI/DeviceTreexHCIController.cpp
     Bus/USB/xHCI/PCIxHCIController.cpp
     Bus/USB/xHCI/xHCIController.cpp
@@ -48,7 +47,6 @@ set(KERNEL_SOURCES
     Bus/USB/USBManagement.cpp
     Bus/USB/USBPipe.cpp
     Bus/USB/USBTransfer.cpp
-    Bus/VirtIO/Transport/PCIe/Detect.cpp
     Bus/VirtIO/Transport/PCIe/InterruptHandler.cpp
     Bus/VirtIO/Transport/PCIe/TransportLink.cpp
     Bus/VirtIO/Transport/Entity.cpp
@@ -68,8 +66,6 @@ set(KERNEL_SOURCES
     Devices/CharacterDevice.cpp
     Devices/Device.cpp
     Devices/FUSEDevice.cpp
-    Devices/PCISerialDevice.cpp
-    Devices/SerialDevice.cpp
     Devices/Generic/ConsoleDevice.cpp
     Devices/Generic/DeviceControlDevice.cpp
     Devices/Generic/FullDevice.cpp
@@ -116,6 +112,8 @@ set(KERNEL_SOURCES
     Devices/Input/PS2/MouseDevice.cpp
     Devices/Input/VirtIO/Input.cpp
     Devices/Loop/LoopDevice.cpp
+    Devices/Serial/16550/PCISerial16550.cpp
+    Devices/Serial/16550/Serial16550.cpp
     Devices/Serial/VirtIO/Console.cpp
     Devices/Serial/VirtIO/ConsolePort.cpp
     Devices/Storage/AHCI/ATADevice.cpp
@@ -172,6 +170,7 @@ set(KERNEL_SOURCES
     FileSystem/Mount.cpp
     FileSystem/MountFile.cpp
     FileSystem/OpenFileDescription.cpp
+    FileSystem/UnsharedResourceFile.cpp
     FileSystem/Plan9FS/FileSystem.cpp
     FileSystem/Plan9FS/Inode.cpp
     FileSystem/Plan9FS/Message.cpp
@@ -247,6 +246,9 @@ set(KERNEL_SOURCES
     Firmware/DeviceTree/DeviceTree.cpp
     Firmware/DeviceTree/Management.cpp
     Firmware/DeviceTree/PlatformInit.cpp
+    Firmware/SMBIOS/SysFSComponent.cpp
+    Firmware/SMBIOS/SysFSDirectory.cpp
+    Heap/kmalloc.cpp
     Interrupts/GenericInterruptHandler.cpp
     Interrupts/IRQHandler.cpp
     Interrupts/PCIIRQHandler.cpp
@@ -340,6 +342,7 @@ set(KERNEL_SOURCES
     Syscalls/pipe.cpp
     Syscalls/pledge.cpp
     Syscalls/poll.cpp
+    Syscalls/posix_spawn.cpp
     Syscalls/prctl.cpp
     Syscalls/process.cpp
     Syscalls/profiling.cpp
@@ -382,6 +385,7 @@ set(KERNEL_SOURCES
     Devices/TTY/VirtualConsole.cpp
     Tasks/Coredump.cpp
     Tasks/CrashHandler.cpp
+    Tasks/DeprecatedWaitQueue.cpp
     Tasks/FinalizerTask.cpp
     Tasks/FutexQueue.cpp
     Tasks/HostnameContext.cpp
@@ -413,8 +417,6 @@ if ("${SERENITY_ARCH}" STREQUAL "x86_64")
 
         Arch/x86_64/Firmware/ACPI.cpp
         Arch/x86_64/Firmware/PCBIOS/Mapper.cpp
-        Arch/x86_64/Firmware/PCBIOS/SysFSComponent.cpp
-        Arch/x86_64/Firmware/PCBIOS/SysFSDirectory.cpp
 
         Arch/x86_64/Hypervisor/BochsDisplayConnector.cpp
         Arch/x86_64/Hypervisor/VMWareBackdoor.cpp
@@ -434,7 +436,7 @@ if ("${SERENITY_ARCH}" STREQUAL "x86_64")
 
         Arch/x86_64/ISABus/I8042Controller.cpp
         Arch/x86_64/ISABus/Input/VMWareMouseDevice.cpp
-        Arch/x86_64/ISABus/SerialDevice.cpp
+        Arch/x86_64/ISABus/Serial16550.cpp
         Arch/x86_64/PCI/Controller/PIIX4HostBridge.cpp
         Arch/x86_64/PCI/Initializer.cpp
         Arch/x86_64/PCI/MSI.cpp
@@ -446,7 +448,7 @@ if ("${SERENITY_ARCH}" STREQUAL "x86_64")
 
         # TODO: Share these with the aarch64 build
         Interrupts/SpuriousInterruptHandler.cpp
-        kprintf.cpp        
+        kprintf.cpp
     )
 
     set(KERNEL_SOURCES
@@ -457,7 +459,7 @@ if ("${SERENITY_ARCH}" STREQUAL "x86_64")
 
     set(KERNEL_SOURCES
         ${KERNEL_SOURCES}
-        
+
         ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86_64/ASM_wrapper.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86_64/CPUID.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Arch/x86_64/InterruptManagement.cpp
@@ -482,6 +484,7 @@ elseif("${SERENITY_ARCH}" STREQUAL "aarch64")
         Arch/aarch64/RPi/InterruptController.cpp
         Arch/aarch64/RPi/Mailbox.cpp
         Arch/aarch64/RPi/MiniUART.cpp
+        Arch/aarch64/RPi/RP1.cpp
         Arch/aarch64/RPi/SDHostController.cpp
         Arch/aarch64/RPi/Timer.cpp
         Arch/aarch64/RPi/Watchdog.cpp
@@ -508,7 +511,8 @@ elseif("${SERENITY_ARCH}" STREQUAL "aarch64")
         Arch/aarch64/FPUState.S
         Arch/aarch64/InterruptManagement.cpp
         Arch/aarch64/Interrupts.cpp
-        Arch/aarch64/Interrupts/GIC.cpp
+        Arch/aarch64/Interrupts/GICv2.cpp
+        Arch/aarch64/Interrupts/GICv3.cpp
         Arch/aarch64/MainIdRegister.cpp
         Arch/aarch64/PSCI.cpp
         Arch/aarch64/PageDirectory.cpp
@@ -525,6 +529,10 @@ elseif("${SERENITY_ARCH}" STREQUAL "aarch64")
 
         Arch/aarch64/Serial/PL011.cpp
 
+        Arch/aarch64/PCI/Controller/BroadcomHostController.cpp
+
+        Bus/PCI/Controller/GenericECAMHostController.cpp
+        Bus/PCI/DeviceTreeHelpers.cpp
         Bus/PCI/DeviceTreeInitializer.cpp
     )
 
@@ -535,6 +543,19 @@ elseif("${SERENITY_ARCH}" STREQUAL "aarch64")
     #       by the compiler. The CPU cannot access global variables without the MMU as the kernel is linked for a virtual address in high memory.
     set_source_files_properties(${SOURCES_RUNNING_WITHOUT_MMU} PROPERTIES COMPILE_FLAGS "-fno-stack-protector -fno-sanitize=all")
 elseif("${SERENITY_ARCH}" STREQUAL "riscv64")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+    set(extensions_header "${CMAKE_CURRENT_BINARY_DIR}/Arch/riscv64/Extensions.h")
+
+    add_custom_command(
+        OUTPUT "${extensions_header}"
+        COMMAND ${Python3_EXECUTABLE} "${SerenityOS_SOURCE_DIR}/Meta/riscv_extensions_generator.py" "${SerenityOS_SOURCE_DIR}/Meta/riscv-extensions.txt" -o "${extensions_header}"
+        DEPENDS "${SerenityOS_SOURCE_DIR}/Meta/riscv_extensions_generator.py" "${SerenityOS_SOURCE_DIR}/Meta/riscv-extensions.txt"
+        VERBATIM
+    )
+
+    add_custom_target(generate_riscv_extensions_header DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/Arch/riscv64/Extensions.h")
+
     set(SOURCES_RUNNING_WITHOUT_MMU
         Arch/riscv64/MMU.cpp
         Arch/riscv64/pre_init.cpp
@@ -548,11 +569,14 @@ elseif("${SERENITY_ARCH}" STREQUAL "riscv64")
         ${KERNEL_SOURCES}
         ${SOURCES_RUNNING_WITHOUT_MMU}
 
+        "${extensions_header}"
+
         Arch/Processor.cpp
         kprintf.cpp
 
         Arch/riscv64/archctl.cpp
         Arch/riscv64/boot.S
+        Arch/riscv64/CPUID.cpp
         Arch/riscv64/CurrentTime.cpp
         Arch/riscv64/DebugOutput.cpp
         Arch/riscv64/Delay.cpp
@@ -564,13 +588,18 @@ elseif("${SERENITY_ARCH}" STREQUAL "riscv64")
         Arch/riscv64/PowerState.cpp
         Arch/riscv64/pre_init.cpp
         Arch/riscv64/Processor.cpp
+        Arch/riscv64/ProcessorInfo.cpp
         Arch/riscv64/SafeMem.cpp
         Arch/riscv64/SBI.cpp
         Arch/riscv64/SmapDisabler.cpp
         Arch/riscv64/Timer.cpp
         Arch/riscv64/trap_handler.S
 
+        Bus/PCI/Controller/GenericECAMHostController.cpp
+        Bus/PCI/DeviceTreeHelpers.cpp
         Bus/PCI/DeviceTreeInitializer.cpp
+
+        Devices/Time/GoldfishRTC.cpp
     )
 
     # NOTE: These files cannot use a stack protector and sanitizers, as these will cause accesses to global variables to be inserted
@@ -588,6 +617,7 @@ set(AK_SOURCES
     ../AK/DOSPackedTime.cpp
     ../AK/GenericLexer.cpp
     ../AK/Hex.cpp
+    ../AK/InternetChecksum.cpp
     ../AK/MemoryStream.cpp
     ../AK/SipHash.cpp
     ../AK/Stream.cpp
@@ -657,7 +687,6 @@ set(PARTITION_SOURCES
     ../Userland/Libraries/LibPartition/PartitionTable.cpp
 )
 
-add_compile_options(-fsigned-char)
 add_compile_options(-Wno-unknown-warning-option -Wvla -Wnull-dereference)
 add_compile_options(-fno-rtti -ffreestanding -fbuiltin)
 
@@ -676,29 +705,21 @@ add_compile_options(-fstack-protector-strong)
 add_compile_options(-fno-exceptions)
 add_compile_options(-nostdlib)
 
-# Auto initialize trivial types on the stack, we use "pattern" as 
+# Auto initialize trivial types on the stack, we use "pattern" as
 # it's the only option portable across compilers going forward.
 #
 # This is designed to help avoid uninitialized variables bugs and
-# information disclosures coming from the kernel stack. 
-#
-# FIXME: It appears to conflict with something during the boot of the
-# aarch64 kernel, we should investigate and remove this special case.
-if (NOT "${SERENITY_ARCH}" STREQUAL "aarch64")
-    add_compile_options(-ftrivial-auto-var-init=pattern)
+# information disclosures coming from the kernel stack.
+add_compile_options(-ftrivial-auto-var-init=pattern)
+
+# Zero any registers used within a function on return (to reduce data lifetime and ROP gadgets).
+# This is not implemented for RISC-V on Clang.
+if (NOT (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND "${SERENITY_ARCH}" STREQUAL "riscv64"))
+    add_compile_options(-fzero-call-used-regs=used-gpr)
 endif()
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    # Apply any flags that are only available on >= GCC 11.1
-    if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "11.1")
-        # Zero any registers used within a function on return (to reduce data lifetime and ROP gadgets).
-        add_compile_options(-fzero-call-used-regs=used-gpr)
-    endif()
-    link_directories(${TOOLCHAIN_ROOT}/${SERENITY_ARCH}-pc-serenity/lib)
-    link_directories(${TOOLCHAIN_ROOT}/lib/gcc/${SERENITY_ARCH}-pc-serenity/${GCC_VERSION}/)
-
     set(TARGET_STRING "")
-
 
     # Prevent naively implemented string functions (like strlen) from being "optimized" into a call to themselves.
     set_source_files_properties(Library/MiniStdLib.cpp
@@ -712,7 +733,6 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         add_link_options(LINKER:-z,pack-relative-relocs)
     endif()
 else() # Assume Clang
-    add_compile_options(-Waddress-of-packed-member)
     add_compile_options(-faligned-allocation)
 
     # We need this in order to pick up the #define __serenity__, otherwise we end up including unistd.h into the linker script
@@ -783,6 +803,12 @@ endif()
 if (ENABLE_KERNEL_UNDEFINED_SANITIZER)
     # Kernel Undefined Behavior Sanitizer (KUBSAN)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=undefined")
+    set_source_files_properties(Security/UBSanitizer.cpp PROPERTIES COMPILE_FLAGS "-fno-sanitize=undefined")
+    
+    if (ENABLE_KERNEL_UNDEFINED_SANITIZER_ALWAYS_DEADLY)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-sanitize-recover=undefined")
+    endif()
+    add_compile_definitions(ENABLE_KERNEL_UNDEFINED_SANITIZER_ALWAYS_DEADLY=$<BOOL:${ENABLE_KERNEL_UNDEFINED_SANITIZER_ALWAYS_DEADLY}>)
 endif()
 
 if (ENABLE_KERNEL_ADDRESS_SANITIZER)
@@ -820,16 +846,22 @@ set(SOURCES
 
 add_compile_definitions(KERNEL)
 
-add_library(kernel_heap STATIC ${KERNEL_HEAP_SOURCES})
-target_link_libraries(kernel_heap PUBLIC GenericClangPlugin)
-
 add_executable(Kernel ${SOURCES})
 add_dependencies(Kernel generate_EscapeSequenceStateMachine.h generate_version_header)
 target_link_libraries(Kernel PUBLIC GenericClangPlugin)
 
 if("${SERENITY_ARCH}" STREQUAL "aarch64")
-    target_link_options(Kernel PRIVATE LINKER:-T ${CMAKE_CURRENT_SOURCE_DIR}/Arch/aarch64/linker.ld -nostdlib LINKER:--no-pie)
-    set_target_properties(Kernel PROPERTIES LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Arch/aarch64/linker.ld)
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/linker.ld
+        COMMAND "${CMAKE_CXX_COMPILER}" ${TARGET_STRING} -E -P -x c -I${CMAKE_CURRENT_SOURCE_DIR}/.. "${CMAKE_CURRENT_SOURCE_DIR}/Arch/aarch64/linker.ld" -o "${CMAKE_CURRENT_BINARY_DIR}/linker.ld"
+        MAIN_DEPENDENCY "Arch/aarch64/linker.ld"
+        COMMENT "Preprocessing linker.ld"
+        VERBATIM
+    )
+    add_custom_target(generate_kernel_linker_script DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/linker.ld)
+
+    target_link_options(Kernel PRIVATE LINKER:-T ${CMAKE_CURRENT_BINARY_DIR}/linker.ld -nostdlib)
+    set_target_properties(Kernel PROPERTIES LINK_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/linker.ld")
 elseif("${SERENITY_ARCH}" STREQUAL "riscv64")
     add_custom_command(
         OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/linker.ld
@@ -869,15 +901,12 @@ if (ENABLE_KERNEL_LTO)
     check_ipo_supported()
     add_definitions(-DENABLE_KERNEL_LTO)
     set_property(TARGET Kernel PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
-    if (NOT "${SERENITY_ARCH}" STREQUAL "aarch64")
-        set_property(TARGET kernel_heap PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
-    endif()
 endif()
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    target_link_libraries(Kernel PRIVATE kernel_heap gcc)
+    target_link_libraries(Kernel PRIVATE gcc)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang$")
-    target_link_libraries(Kernel PRIVATE kernel_heap clang_rt.builtins)
+    target_link_libraries(Kernel PRIVATE clang_rt.builtins)
 endif()
 
 if ("${SERENITY_ARCH}" STREQUAL "aarch64")

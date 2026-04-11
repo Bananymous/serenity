@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2024, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -8,7 +8,7 @@
 
 namespace Kernel {
 
-ErrorOr<FlatPtr> Process::sys$archctl(int option, FlatPtr arg1)
+ErrorOr<FlatPtr> Process::sys$archctl(int option, FlatPtr arg1, FlatPtr, FlatPtr)
 {
     (void)option;
     (void)arg1;

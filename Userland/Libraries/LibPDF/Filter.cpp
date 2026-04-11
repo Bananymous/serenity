@@ -10,6 +10,7 @@
 #include <LibCompress/Deflate.h>
 #include <LibCompress/Lzw.h>
 #include <LibCompress/PackBitsDecoder.h>
+#include <LibGfx/ImageFormats/BilevelImage.h>
 #include <LibGfx/ImageFormats/CCITTDecoder.h>
 #include <LibGfx/ImageFormats/JBIG2Loader.h>
 #include <LibGfx/ImageFormats/JPEG2000Loader.h>
@@ -225,6 +226,8 @@ PDFErrorOr<ByteBuffer> Filter::decode_lzw(ReadonlyBytes bytes, RefPtr<DictObject
 
 PDFErrorOr<ByteBuffer> Filter::decode_flate(ReadonlyBytes bytes, RefPtr<DictObject> decode_parms)
 {
+    if (bytes.size() < 2)
+        return Error::malformed_error("FlateDecode input too small to contain zlib header");
     auto buff = TRY(Compress::DeflateDecompressor::decompress_all(bytes.slice(2)));
     return handle_lzw_and_flate_parameters(move(buff), decode_parms);
 }
@@ -309,7 +312,7 @@ PDFErrorOr<ByteBuffer> Filter::decode_jbig2(Document* document, ReadonlyBytes by
     }
 
     segments.append(bytes);
-    auto decoded = TRY(Gfx::JBIG2ImageDecoderPlugin::decode_embedded(segments));
+    auto decoded = TRY(TRY(Gfx::JBIG2ImageDecoderPlugin::decode_embedded(segments))->to_byte_buffer());
 
     // JBIG2 treats `1` as "ink present" (black) and `0` as "no ink" (white).
     // PDF treats `1` as "light present" (white) and `1` as "no light" (black).

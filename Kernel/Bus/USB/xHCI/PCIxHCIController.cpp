@@ -1,17 +1,20 @@
 /*
  * Copyright (c) 2024, Idan Horowitz <idan.horowitz@serenityos.org>
- * Copyright (c) 2025, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2025, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <Kernel/Boot/CommandLine.h>
 #include <Kernel/Bus/PCI/API.h>
 #include <Kernel/Bus/PCI/BarMapping.h>
+#include <Kernel/Bus/PCI/Driver.h>
 #include <Kernel/Bus/PCI/IDs.h>
+#include <Kernel/Bus/USB/USBManagement.h>
 #include <Kernel/Bus/USB/xHCI/PCIxHCIController.h>
 #include <Kernel/Bus/USB/xHCI/xHCIInterrupter.h>
 
-namespace Kernel::USB {
+namespace Kernel::USB::xHCI {
 
 ErrorOr<NonnullLockRefPtr<PCIxHCIController>> PCIxHCIController::try_to_initialize(PCI::DeviceIdentifier const& pci_device_identifier)
 {
@@ -59,9 +62,26 @@ void PCIxHCIController::intel_quirk_enable_xhci_ports()
     PCI::write32_locked(device_identifier(), intel_xhci_usb2_port_routing_offset, PCI::read32_locked(device_identifier(), intel_xhci_usb2_port_routing_mask_offset));
 }
 
-ErrorOr<NonnullOwnPtr<GenericInterruptHandler>> PCIxHCIController::create_interrupter(u16 interrupter_id)
+ErrorOr<OwnPtr<GenericInterruptHandler>> PCIxHCIController::create_interrupter(u16 interrupter_id)
 {
     return TRY(xHCIPCIInterrupter::create(*this, interrupter_id));
+}
+
+PCI_DRIVER(xHCIDriver);
+
+ErrorOr<void> xHCIDriver::probe(PCI::DeviceIdentifier const& pci_device_identifier) const
+{
+    if (kernel_command_line().disable_usb())
+        return EPERM;
+
+    if (pci_device_identifier.class_code() != PCI::ClassID::SerialBus
+        || pci_device_identifier.subclass_code() != PCI::SerialBus::SubclassID::USB
+        || pci_device_identifier.prog_if() != PCI::SerialBus::USBProgIf::xHCI)
+        return ENOTSUP;
+
+    auto controller = TRY(PCIxHCIController::try_to_initialize(pci_device_identifier));
+    USB::USBManagement::the().add_controller(controller);
+    return {};
 }
 
 }

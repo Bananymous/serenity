@@ -6,7 +6,7 @@ endif()
 if (${CMAKE_SYSTEM_NAME} STREQUAL "Darwin")
     set(vendor "apple")
 else()
-    set(vendor "pc")
+    set(vendor "unknown")
 endif()
 
 if (${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
@@ -21,7 +21,7 @@ set(JAKT_COMPILER "${SerenityOS_SOURCE_DIR}/Toolchain/Local/jakt/bin/jakt")
 set(JAKT_TARGET_TRIPLE ${arch}-${vendor}-${os}-unknown)
 if(${PROJECT_NAME} STREQUAL "Lagom")
     set(JAKT_TARGET_TRIPLE ${arch}-unknown-${os}-unknown)
-    set(JAKT_LIBRARY_BASE "${SerenityOS_SOURCE_DIR}/Toolchain/Local/jakt/lib")
+    set(JAKT_LIBRARY_BASE "${SerenityOS_SOURCE_DIR}/Toolchain/Local/jakt/${CMAKE_INSTALL_LIBDIR}")
 else()
     set(JAKT_LIBRARY_BASE "${SerenityOS_SOURCE_DIR}/Toolchain/Local/jakt/usr/local/lib")
 endif()
@@ -37,6 +37,27 @@ if (ENABLE_JAKT)
         message(WARNING "Jakt compiler not found at ${JAKT_COMPILER}, disabling jakt")
         set(ENABLE_JAKT OFF CACHE BOOL "Enable jakt" FORCE)
     else()
+        find_package(Python COMPONENTS Interpreter REQUIRED)
+        file(WRITE ${CMAKE_BINARY_DIR}/jakt_test.cpp "#include <new>")
+        execute_process(
+            COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/get_cxx_includes.py
+                --compiler ${CMAKE_CXX_COMPILER}
+                --test-file "${CMAKE_BINARY_DIR}/jakt_test.cpp"
+                --target "${CMAKE_CXX_COMPILER_TARGET}"
+            OUTPUT_VARIABLE CXX_SYSTEM_INCLUDES_CLEAN
+        )
+        list(REMOVE_DUPLICATES CXX_SYSTEM_INCLUDES_CLEAN)
+
+        set(test_sysroot_arg)
+        if (CMAKE_SYSROOT)
+            set(test_sysroot_arg "--extra-cpp-flag--sysroot=${CMAKE_SYSROOT}")
+        endif()
+
+        set(test_system_includes)
+        foreach(include IN LISTS CXX_SYSTEM_INCLUDES_CLEAN)
+            list(APPEND test_system_includes "--extra-cpp-flag-isystem${include}")
+        endforeach()
+
         file(WRITE ${CMAKE_BINARY_DIR}/jakt_test.jakt "import extern \"LibMain/Main.h\"\nfn main() { }\n")
         set(include_args)
         set(all_includes
@@ -58,6 +79,8 @@ if (ENABLE_JAKT)
                 --ak-is-my-only-stdlib
                 -T ${JAKT_TARGET_TRIPLE}
                 --binary-dir ${CMAKE_BINARY_DIR}
+                ${test_sysroot_arg}
+                ${test_system_includes}
                 ${include_args}
                 ${CMAKE_BINARY_DIR}/jakt_test.jakt
             RESULT_VARIABLE JAKT_COMPILER_RESULT
@@ -98,6 +121,12 @@ function(add_jakt_executable target source)
     foreach(config IN LISTS JAKT_EXECUTABLE_CONFIGS)
         list(APPEND configs "--config" "${config}")
     endforeach()
+    foreach(include IN LISTS CXX_COMPILER_INCLUDES)
+        list(APPEND includes "-I" "${include}")
+    endforeach()
+    foreach(include IN LISTS CXX_SYSTEM_INCLUDES_CLEAN)
+        list(APPEND includes "--extra-cpp-flag-isystem${include}")
+    endforeach()
     foreach(include IN LISTS JAKT_EXECUTABLE_INCLUDES)
         list(APPEND includes "-I" "${include}")
     endforeach()
@@ -123,6 +152,12 @@ function(add_jakt_executable target source)
 
     set(extra_cpp_flags "--extra-cpp-flag-std=c++2b") # FIXME: CMake should be setting this, but sometimes (e.g. macOS /usr/bin/c++ for lagom) it doesn't;
                                                       #        Passing it here allows us to build on AppleClang 15, and if CMake starts setting it, it will be overridden by later flags.
+
+    if (os STREQUAL "serenity")
+        list(APPEND extra_cpp_flags "--extra-cpp-flag-D__serenity__")
+        list(APPEND extra_cpp_flags "--extra-cpp-flag-D__unix")
+        list(APPEND extra_cpp_flags "--extra-cpp-flag-D__unix__")
+    endif()
     foreach(flag IN LISTS compile_flags)
         list(APPEND extra_cpp_flags "--extra-cpp-flag${flag}")
     endforeach()
@@ -188,16 +223,17 @@ function(serenity_jakt_app target_name source)
     add_jakt_executable(${target_name} ${source}
         INCLUDES
             ${INCLUDE_DIRECTORIES}
-            ${PROJECT_SOURCE_DIR}
-            ${PROJECT_SOURCE_DIR}/Userland/Libraries
-            ${PROJECT_SOURCE_DIR}/Userland/Libraries/LibCrypt
-            ${PROJECT_SOURCE_DIR}/Userland/Libraries/LibSystem
-            ${PROJECT_SOURCE_DIR}/Userland/Services
-            ${PROJECT_SOURCE_DIR}/Userland
+            ${SerenityOS_SOURCE_DIR}
+            ${SerenityOS_SOURCE_DIR}/Userland/Libraries
+            ${SerenityOS_SOURCE_DIR}/Userland/Libraries/LibCrypt
+            ${SerenityOS_SOURCE_DIR}/Userland/Libraries/LibSystem
+            ${SerenityOS_SOURCE_DIR}/Userland/Services
+            ${SerenityOS_SOURCE_DIR}/Userland
             ${PROJECT_BINARY_DIR}
             ${PROJECT_BINARY_DIR}/Userland/Services
             ${PROJECT_BINARY_DIR}/Userland/Libraries
             ${PROJECT_BINARY_DIR}/Userland
+            ${CMAKE_SYSROOT}/usr/include
             ${SERENITY_JAKT_EXECUTABLE_INCLUDES}
         CONFIGS ${SERENITY_JAKT_EXECUTABLE_CONFIGS}
         LINK_LIBRARIES ${SERENITY_JAKT_EXECUTABLE_LINK_LIBRARIES}
@@ -213,16 +249,17 @@ function(serenity_jakt_executable target_name)
     add_jakt_executable(${target_name} ${SERENITY_JAKT_EXECUTABLE_MAIN_SOURCE}
         INCLUDES
             ${INCLUDE_DIRECTORIES}
-            ${PROJECT_SOURCE_DIR}
-            ${PROJECT_SOURCE_DIR}/Userland/Libraries
-            ${PROJECT_SOURCE_DIR}/Userland/Libraries/LibCrypt
-            ${PROJECT_SOURCE_DIR}/Userland/Libraries/LibSystem
-            ${PROJECT_SOURCE_DIR}/Userland/Services
-            ${PROJECT_SOURCE_DIR}/Userland
+            ${SerenityOS_SOURCE_DIR}
+            ${SerenityOS_SOURCE_DIR}/Userland/Libraries
+            ${SerenityOS_SOURCE_DIR}/Userland/Libraries/LibCrypt
+            ${SerenityOS_SOURCE_DIR}/Userland/Libraries/LibSystem
+            ${SerenityOS_SOURCE_DIR}/Userland/Services
+            ${SerenityOS_SOURCE_DIR}/Userland
             ${PROJECT_BINARY_DIR}
             ${PROJECT_BINARY_DIR}/Userland/Services
             ${PROJECT_BINARY_DIR}/Userland/Libraries
             ${PROJECT_BINARY_DIR}/Userland
+            ${CMAKE_SYSROOT}/usr/include
             ${SERENITY_JAKT_EXECUTABLE_INCLUDES}
         CONFIGS ${SERENITY_JAKT_EXECUTABLE_CONFIGS}
         LINK_LIBRARIES ${SERENITY_JAKT_EXECUTABLE_LINK_LIBRARIES}

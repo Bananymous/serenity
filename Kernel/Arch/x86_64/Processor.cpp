@@ -46,8 +46,7 @@ extern "C" void enter_thread_context(Thread* from_thread, Thread* to_thread) __a
 extern "C" FlatPtr do_init_context(Thread* thread, u32 flags) __attribute__((used));
 extern "C" void syscall_entry();
 
-template<typename T>
-bool ProcessorBase<T>::is_smp_enabled()
+bool ProcessorBase::is_smp_enabled()
 {
     return s_smp_enabled;
 }
@@ -56,6 +55,33 @@ UNMAP_AFTER_INIT static void sse_init()
 {
     write_cr0((read_cr0() & 0xfffffffbu) | 0x2);
     write_cr4(read_cr4() | 0x600);
+}
+
+void ProcessorBase::store_fpu_state(FPUState& fpu_state)
+{
+    if (Processor::current().has_feature(CPUFeature::XSAVE) && Processor::current().has_feature(CPUFeature::AVX)) {
+        // The specific state components saved correspond to the bits set in the requested-feature bitmap (RFBM), which is the logical-AND of EDX:EAX and XCR0.
+        // https://www.moritz.systems/blog/how-debuggers-work-getting-and-setting-x86-registers-part-2/
+        asm volatile("xsave %0\n"
+            : "=m"(fpu_state)
+            : "a"(static_cast<u32>(SIMD::StateComponent::AVX | SIMD::StateComponent::SSE | SIMD::StateComponent::X87)), "d"(0u));
+    } else if (Processor::current().has_feature(CPUFeature::FXSR)) {
+        asm volatile("fxsave %0"
+            : "=m"(fpu_state));
+    } else {
+        asm volatile("fnsave %0"
+            : "=m"(fpu_state));
+    }
+}
+
+void ProcessorBase::load_fpu_state(FPUState const& fpu_state)
+{
+    if (Processor::current().has_feature(CPUFeature::XSAVE) && Processor::current().has_feature(CPUFeature::AVX))
+        asm volatile("xrstor %0" ::"m"(fpu_state), "a"(static_cast<u32>(SIMD::StateComponent::AVX | SIMD::StateComponent::SSE | SIMD::StateComponent::X87)), "d"(0u));
+    else if (Processor::current().has_feature(CPUFeature::FXSR))
+        asm volatile("fxrstor %0" ::"m"(fpu_state));
+    else
+        asm volatile("frstor %0" ::"m"(fpu_state));
 }
 
 UNMAP_AFTER_INIT void Processor::cpu_detect()
@@ -590,8 +616,7 @@ UNMAP_AFTER_INIT void Processor::cpu_setup()
         m_features |= CPUFeature::OSPKE;
 }
 
-template<typename T>
-UNMAP_AFTER_INIT void ProcessorBase<T>::early_initialize(u32 cpu)
+UNMAP_AFTER_INIT void ProcessorBase::early_initialize(u32 cpu)
 {
     m_self = static_cast<Processor*>(this);
     auto self = static_cast<Processor*>(this);
@@ -625,8 +650,7 @@ UNMAP_AFTER_INIT void ProcessorBase<T>::early_initialize(u32 cpu)
     VERIFY(&current() == this); // sanity check
 }
 
-template<typename T>
-UNMAP_AFTER_INIT void ProcessorBase<T>::initialize(u32 cpu)
+UNMAP_AFTER_INIT void ProcessorBase::initialize(u32 cpu)
 {
     VERIFY(m_self == this);
     VERIFY(&current() == this); // sanity check
@@ -651,18 +675,7 @@ UNMAP_AFTER_INIT void ProcessorBase<T>::initialize(u32 cpu)
     if (cpu == 0) {
         VERIFY((FlatPtr(&s_clean_fpu_state) & 0xF) == 0);
         asm volatile("fninit");
-        // Initialize AVX state
-        if (has_feature(CPUFeature::XSAVE | CPUFeature::AVX)) {
-            asm volatile("xsave %0\n"
-                         : "=m"(s_clean_fpu_state)
-                         : "a"(static_cast<u32>(SIMD::StateComponent::AVX | SIMD::StateComponent::SSE | SIMD::StateComponent::X87)), "d"(0u));
-        } else if (has_feature(CPUFeature::FXSR)) {
-            asm volatile("fxsave %0"
-                         : "=m"(s_clean_fpu_state));
-        } else {
-            asm volatile("fnsave %0"
-                         : "=m"(s_clean_fpu_state));
-        }
+        store_fpu_state(s_clean_fpu_state);
 
         if (has_feature(CPUFeature::HYPERVISOR))
             self->detect_hypervisor();
@@ -750,7 +763,7 @@ void Processor::flush_gdt()
     m_gdtr.address = m_gdt;
     m_gdtr.limit = (m_gdt_length * 8) - 1;
     asm volatile("lgdt %0" ::"m"(m_gdtr)
-                 : "memory");
+        : "memory");
 }
 
 DescriptorTablePointer const& Processor::get_gdtr()
@@ -763,89 +776,30 @@ ProcessorContainer& Processor::processors()
     return s_processors;
 }
 
-template<typename T>
-Processor& ProcessorBase<T>::by_id(u32 id)
+Processor& ProcessorBase::by_id(u32 id)
 {
     return *s_processors[id];
 }
 
-template<typename T>
-void ProcessorBase<T>::exit_trap(TrapFrame& trap)
-{
-    VERIFY_INTERRUPTS_DISABLED();
-    VERIFY(&Processor::current() == this);
-
-    auto* self = static_cast<Processor*>(this);
-
-    // Temporarily enter a critical section. This is to prevent critical
-    // sections entered and left within e.g. smp_process_pending_messages
-    // to trigger a context switch while we're executing this function
-    // See the comment at the end of the function why we don't use
-    // ScopedCritical here.
-    m_in_critical = m_in_critical + 1;
-
-    VERIFY(m_in_irq >= trap.prev_irq_level);
-    m_in_irq = trap.prev_irq_level;
-
-    if (s_smp_enabled)
-        self->smp_process_pending_messages();
-
-    // Process the deferred call queue. Among other things, this ensures
-    // that any pending thread unblocks happen before we enter the scheduler.
-    m_deferred_call_pool.execute_pending();
-
-    auto* current_thread = Processor::current_thread();
-    if (current_thread) {
-        auto& current_trap = current_thread->current_trap();
-        current_trap = trap.next_trap;
-        ExecutionMode new_previous_mode;
-        if (current_trap) {
-            VERIFY(current_trap->regs);
-            // If we have another higher level trap then we probably returned
-            // from an interrupt or irq handler.
-            new_previous_mode = current_trap->regs->previous_mode();
-        } else {
-            // If we don't have a higher level trap then we're back in user mode.
-            // Which means that the previous mode prior to being back in user mode was kernel mode
-            new_previous_mode = ExecutionMode::Kernel;
-        }
-
-        if (current_thread->set_previous_mode(new_previous_mode))
-            current_thread->update_time_scheduled(TimeManagement::scheduler_current_time(), true, false);
-    }
-
-    VERIFY_INTERRUPTS_DISABLED();
-
-    // Leave the critical section without actually enabling interrupts.
-    // We don't want context switches to happen until we're explicitly
-    // triggering a switch in check_invoke_scheduler.
-    m_in_critical = m_in_critical - 1;
-    if (!m_in_irq && !m_in_critical)
-        check_invoke_scheduler();
-}
-
-template<typename T>
-void ProcessorBase<T>::flush_tlb_local(VirtualAddress vaddr, size_t page_count)
+void ProcessorBase::flush_tlb_local(VirtualAddress vaddr, size_t page_count)
 {
     auto ptr = vaddr.as_ptr();
     while (page_count > 0) {
         asm volatile("invlpg %0"
-                     :
-                     : "m"(*ptr)
-                     : "memory");
+            :
+            : "m"(*ptr)
+            : "memory");
         ptr += PAGE_SIZE;
         page_count--;
     }
 }
 
-template<typename T>
-void ProcessorBase<T>::flush_entire_tlb_local()
+void ProcessorBase::flush_entire_tlb_local()
 {
     write_cr3(read_cr3());
 }
 
-template<typename T>
-void ProcessorBase<T>::flush_tlb(Memory::PageDirectory const* page_directory, VirtualAddress vaddr, size_t page_count)
+void ProcessorBase::flush_tlb(Memory::PageDirectory const* page_directory, VirtualAddress vaddr, size_t page_count)
 {
     if (s_smp_enabled && (!Memory::is_user_address(vaddr) || Process::current().thread_count() > 1))
         Processor::smp_broadcast_flush_tlb(page_directory, vaddr, page_count);
@@ -853,8 +807,7 @@ void ProcessorBase<T>::flush_tlb(Memory::PageDirectory const* page_directory, Vi
         flush_tlb_local(vaddr, page_count);
 }
 
-template<typename T>
-void ProcessorBase<T>::flush_instruction_cache(VirtualAddress, size_t)
+void ProcessorBase::flush_instruction_cache(VirtualAddress, size_t)
 {
     // The instruction and data cache are coherent on x86, so we don't need to do anything here.
 }
@@ -898,8 +851,7 @@ ProcessorMessage& Processor::smp_get_from_pool()
     return *msg;
 }
 
-template<typename T>
-u32 ProcessorBase<T>::smp_wake_n_idle_processors(u32 wake_count)
+u32 ProcessorBase::smp_wake_n_idle_processors(u32 wake_count)
 {
     VERIFY_INTERRUPTS_DISABLED();
     VERIFY(wake_count > 0);
@@ -948,8 +900,7 @@ u32 ProcessorBase<T>::smp_wake_n_idle_processors(u32 wake_count)
     return did_wake_count;
 }
 
-template<typename T>
-UNMAP_AFTER_INIT void ProcessorBase<T>::smp_enable()
+UNMAP_AFTER_INIT void ProcessorBase::smp_enable()
 {
     size_t msg_pool_size = Processor::count() * 100u;
     size_t msg_entries_cnt = Processor::count();
@@ -1183,8 +1134,7 @@ void Processor::smp_broadcast_halt()
     APIC::the().broadcast_ipi();
 }
 
-template<typename T>
-void ProcessorBase<T>::halt()
+void ProcessorBase::halt()
 {
     if (s_smp_enabled)
         Processor::smp_broadcast_halt();
@@ -1237,8 +1187,6 @@ extern "C" void enter_thread_context(Thread* from_thread, Thread* to_thread)
     VERIFY(from_thread == to_thread || from_thread->state() != Thread::State::Running);
     VERIFY(to_thread->state() == Thread::State::Running);
 
-    bool has_fxsr = Processor::current().has_feature(CPUFeature::FXSR);
-    bool has_xsave_avx_support = Processor::current().has_feature(CPUFeature::XSAVE) && Processor::current().has_feature(CPUFeature::AVX);
     Processor::set_current_thread(*to_thread);
 
     auto& from_regs = from_thread->regs();
@@ -1248,19 +1196,7 @@ extern "C" void enter_thread_context(Thread* from_thread, Thread* to_thread)
     //       instead of carrying on with elevated I/O privileges.
     VERIFY(get_iopl_from_eflags(to_regs.flags()) == 0);
 
-    if (has_xsave_avx_support) {
-        // The specific state components saved correspond to the bits set in the requested-feature bitmap (RFBM), which is the logical-AND of EDX:EAX and XCR0.
-        // https://www.moritz.systems/blog/how-debuggers-work-getting-and-setting-x86-registers-part-2/
-        asm volatile("xsave %0\n"
-                     : "=m"(from_thread->fpu_state())
-                     : "a"(static_cast<u32>(SIMD::StateComponent::AVX | SIMD::StateComponent::SSE | SIMD::StateComponent::X87)), "d"(0u));
-    } else if (has_fxsr) {
-        asm volatile("fxsave %0"
-                     : "=m"(from_thread->fpu_state()));
-    } else {
-        asm volatile("fnsave %0"
-                     : "=m"(from_thread->fpu_state()));
-    }
+    Processor::store_fpu_state(from_thread->fpu_state());
 
     if (from_thread->process().is_traced())
         read_debug_registers_into(from_thread->debug_register_state());
@@ -1283,12 +1219,7 @@ extern "C" void enter_thread_context(Thread* from_thread, Thread* to_thread)
     VERIFY(in_critical > 0);
     Processor::restore_critical(in_critical);
 
-    if (has_xsave_avx_support)
-        asm volatile("xrstor %0" ::"m"(to_thread->fpu_state()), "a"(static_cast<u32>(SIMD::StateComponent::AVX | SIMD::StateComponent::SSE | SIMD::StateComponent::X87)), "d"(0u));
-    else if (has_fxsr)
-        asm volatile("fxrstor %0" ::"m"(to_thread->fpu_state()));
-    else
-        asm volatile("frstor %0" ::"m"(to_thread->fpu_state()));
+    Processor::load_fpu_state(to_thread->fpu_state());
 }
 
 extern "C" NO_SANITIZE_COVERAGE FlatPtr do_init_context(Thread* thread, u32 flags)
@@ -1299,8 +1230,7 @@ extern "C" NO_SANITIZE_COVERAGE FlatPtr do_init_context(Thread* thread, u32 flag
 }
 
 // FIXME: Share this code with other architectures.
-template<typename T>
-void ProcessorBase<T>::assume_context(Thread& thread, InterruptsState new_interrupts_state)
+void ProcessorBase::assume_context(Thread& thread, InterruptsState new_interrupts_state)
 {
     dbgln_if(CONTEXT_SWITCH_DEBUG, "Assume context for thread {} {}", VirtualAddress(&thread), thread);
 
@@ -1316,8 +1246,7 @@ void ProcessorBase<T>::assume_context(Thread& thread, InterruptsState new_interr
     VERIFY_NOT_REACHED();
 }
 
-template<typename T>
-u32 ProcessorBase<T>::clear_critical()
+u32 ProcessorBase::clear_critical()
 {
     InterruptDisabler disabler;
     auto prev_critical = in_critical();
@@ -1366,14 +1295,12 @@ NAKED NO_SANITIZE_COVERAGE void do_assume_context(Thread*, u32)
     // clang-format on
 }
 
-template<typename T>
-StringView ProcessorBase<T>::platform_string()
+StringView ProcessorBase::platform_string()
 {
     return "x86_64"sv;
 }
 
-template<typename T>
-FlatPtr ProcessorBase<T>::init_context(Thread& thread, bool leave_crit)
+FlatPtr ProcessorBase::init_context(Thread& thread, bool leave_crit)
 {
     VERIFY(g_scheduler_lock.is_locked());
     if (leave_crit) {
@@ -1440,7 +1367,6 @@ FlatPtr ProcessorBase<T>::init_context(Thread& thread, bool leave_crit)
     stack_top -= sizeof(TrapFrame);
     TrapFrame& trap = *reinterpret_cast<TrapFrame*>(stack_top);
     trap.regs = &iretframe;
-    trap.prev_irq_level = 0;
     trap.next_trap = nullptr;
 
     stack_top -= sizeof(u64); // pointer to TrapFrame
@@ -1476,8 +1402,7 @@ FlatPtr ProcessorBase<T>::init_context(Thread& thread, bool leave_crit)
     return stack_top;
 }
 
-template<typename T>
-void ProcessorBase<T>::switch_context(Thread*& from_thread, Thread*& to_thread)
+void ProcessorBase::switch_context(Thread*& from_thread, Thread*& to_thread)
 {
     VERIFY(!m_in_irq);
     VERIFY(m_in_critical == 1);
@@ -1559,8 +1484,7 @@ void ProcessorBase<T>::switch_context(Thread*& from_thread, Thread*& to_thread)
     dbgln_if(CONTEXT_SWITCH_DEBUG, "switch_context <-- from {} {} to {} {}", VirtualAddress(from_thread), *from_thread, VirtualAddress(to_thread), *to_thread);
 }
 
-template<typename T>
-UNMAP_AFTER_INIT void ProcessorBase<T>::initialize_context_switching(Thread& initial_thread)
+UNMAP_AFTER_INIT void ProcessorBase::initialize_context_switching(Thread& initial_thread)
 {
     VERIFY(initial_thread.process().is_kernel_process());
     auto* self = static_cast<Processor*>(this);
@@ -1603,24 +1527,30 @@ void Processor::set_fs_base(FlatPtr fs_base)
     fs_base_msr.set(fs_base);
 }
 
-template<typename T>
-void ProcessorBase<T>::idle_begin() const
+void ProcessorBase::idle_begin() const
 {
     Processor::s_idle_cpu_mask.fetch_or(1u << m_cpu, AK::MemoryOrder::memory_order_relaxed);
 }
 
-template<typename T>
-void ProcessorBase<T>::idle_end() const
+void ProcessorBase::idle_end() const
 {
     Processor::s_idle_cpu_mask.fetch_and(~(1u << m_cpu), AK::MemoryOrder::memory_order_relaxed);
 }
 
-template<typename T>
-void ProcessorBase<T>::wait_for_interrupt() const
+void ProcessorBase::idle() const
 {
-    asm("hlt");
+    VERIFY_INTERRUPTS_DISABLED();
+
+    idle_begin();
+    asm volatile(R"(
+        // Atomically go to sleep and enable interrupts.
+        // These two instructions are atomic, since STI only enables interrupts after the next instruction, so after the processor went to sleep.
+        sti; hlt
+
+        // Disable interrupts again.
+        cli
+    )" :);
+    idle_end();
 }
 
 }
-
-#include <Kernel/Arch/ProcessorFunctions.include>

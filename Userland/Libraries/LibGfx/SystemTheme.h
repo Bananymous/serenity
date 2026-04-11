@@ -78,6 +78,8 @@ namespace Gfx {
     C(MovingWindowTitle)           \
     C(MovingWindowTitleShadow)     \
     C(MovingWindowTitleStripes)    \
+    C(OverlayText)                 \
+    C(OverlayBackground)           \
     C(PlaceholderText)             \
     C(Red)                         \
     C(RubberBandBorder)            \
@@ -145,7 +147,8 @@ namespace Gfx {
     C(TaskbarShadow)            \
     C(MenuShadow)               \
     C(TooltipShadow)            \
-    C(ColorScheme)
+    C(ColorScheme)              \
+    C(OverlayRectShadow)
 
 enum class ColorRole {
     NoRole,

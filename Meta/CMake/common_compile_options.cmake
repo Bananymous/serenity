@@ -1,5 +1,15 @@
 # Flags shared by Lagom (including Ladybird) and Serenity.
-set(CMAKE_CXX_STANDARD 23)
+
+# FIXME: Remove this once CMake knows that AppleClang understands -std=c++26.
+# see https://gitlab.kitware.com/cmake/cmake/-/issues/27486
+if (CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+    set(CMAKE_CXX_STANDARD 23)
+    set(CMAKE_CXX23_STANDARD_COMPILE_OPTION "")
+    set(CMAKE_CXX_FLAGS "-std=c++26")
+else()
+    set(CMAKE_CXX_STANDARD 26)
+endif()
+
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -8,7 +18,6 @@ set(CMAKE_COLOR_DIAGNOSTICS ON)
 add_compile_options(-Wall)
 add_compile_options(-Wextra)
 
-add_compile_options(-Wno-address-of-packed-member)
 add_compile_options(-Wcast-qual)
 add_compile_options(-Wdeprecated-copy)
 add_compile_options(-Wduplicated-cond)
@@ -64,12 +73,20 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang$")
     add_compile_options(-Wno-vla-cxx-extension)
     add_compile_options(-Wno-coroutine-missing-unhandled-exception)
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options(-Wcast-align)
+    add_compile_options(-Wdouble-promotion)
+
     # Only ignore expansion-to-defined for g++, clang's implementation doesn't complain about function-like macros
     add_compile_options(-Wno-expansion-to-defined)
     add_compile_options(-Wno-literal-suffix)
 
     # FIXME: This warning seems useful but has too many false positives with GCC 13.
     add_compile_options(-Wno-dangling-reference)
+
+    # FIXME: This seems to produce way to many false positives with GCC 15
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "15")
+        add_compile_options(-Wno-array-bounds)
+    endif()
 endif()
 
 if (UNIX AND NOT APPLE AND NOT ENABLE_FUZZERS)

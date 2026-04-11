@@ -12,13 +12,11 @@
 #include <Kernel/Arch/Processor.h>
 #include <Kernel/Boot/BootInfo.h>
 #include <Kernel/Boot/CommandLine.h>
-#include <Kernel/Boot/Multiboot.h>
 #include <Kernel/Bus/PCI/Access.h>
 #include <Kernel/Bus/PCI/Initializer.h>
 #include <Kernel/Bus/USB/Drivers/USBDriver.h>
 #include <Kernel/Bus/USB/USBManagement.h>
 #include <Kernel/Bus/VirtIO/Device.h>
-#include <Kernel/Bus/VirtIO/Transport/PCIe/Detect.h>
 #include <Kernel/Devices/Audio/Management.h>
 #include <Kernel/Devices/Device.h>
 #include <Kernel/Devices/FUSEDevice.h>
@@ -37,8 +35,6 @@
 #ifdef ENABLE_KERNEL_COVERAGE_COLLECTION
 #    include <Kernel/Devices/KCOVDevice.h>
 #endif
-#include <Kernel/Devices/PCISerialDevice.h>
-#include <Kernel/Devices/SerialDevice.h>
 #include <Kernel/Devices/Storage/StorageManagement.h>
 #include <Kernel/Devices/TTY/PTYMultiplexer.h>
 #include <Kernel/Devices/TTY/VirtualConsole.h>
@@ -71,12 +67,14 @@
 #    include <Kernel/Arch/x86_64/Hypervisor/VMWareBackdoor.h>
 #    include <Kernel/Arch/x86_64/Interrupts/APIC.h>
 #    include <Kernel/Arch/x86_64/Interrupts/PIC.h>
+#    include <Kernel/Devices/Serial/16550/Serial16550.h>
 #elif ARCH(AARCH64)
 #    include <Kernel/Arch/aarch64/RPi/Framebuffer.h>
 #    include <Kernel/Arch/aarch64/RPi/Mailbox.h>
 #    include <Kernel/Arch/aarch64/RPi/MiniUART.h>
 #elif ARCH(RISCV64)
 #    include <Kernel/Arch/riscv64/Delay.h>
+#    include <Kernel/Arch/riscv64/SBI.h>
 #endif
 
 #if ARCH(AARCH64) || ARCH(RISCV64)
@@ -86,8 +84,6 @@
 
 // Defined in the linker script
 typedef void (*ctor_func_t)();
-extern ctor_func_t start_heap_ctors[];
-extern ctor_func_t end_heap_ctors[];
 extern ctor_func_t start_ctors[];
 extern ctor_func_t end_ctors[];
 
@@ -173,9 +169,10 @@ extern "C" [[noreturn]] UNMAP_AFTER_INIT NO_SANITIZE_COVERAGE void init(BootInfo
     new (&bsp_processor()) Processor();
     bsp_processor().early_initialize(0);
 
-    // Invoke the constructors needed for the kernel heap
-    for (ctor_func_t* ctor = start_heap_ctors; ctor < end_heap_ctors; ctor++)
-        (*ctor)();
+#if ARCH(RISCV64)
+    SBI::initialize();
+#endif
+
     kmalloc_init();
 
     load_kernel_symbol_table();
@@ -202,7 +199,7 @@ extern "C" [[noreturn]] UNMAP_AFTER_INIT NO_SANITIZE_COVERAGE void init(BootInfo
         }
     }
     dmesgln("Starting SerenityOS...");
-
+    dmesgln("Kernel Commandline: {}", kernel_command_line().string());
     dmesgln("Boot method: {}", boot_info.boot_method);
 
     MM.unmap_prekernel();
@@ -226,13 +223,21 @@ extern "C" [[noreturn]] UNMAP_AFTER_INIT NO_SANITIZE_COVERAGE void init(BootInfo
         DeviceTree::dump_fdt();
 
     DeviceTree::Management::initialize();
-#endif
 
-#if ARCH(RISCV64)
+#    if ARCH(RISCV64)
+    bsp_processor().find_and_parse_devicetree_node();
     init_delay_loop();
+#    endif
+
+    MUST(DeviceTree::Management::the().probe_drivers(DeviceTree::Driver::ProbeStage::InterruptController));
 #endif
 
     InterruptManagement::initialize();
+
+#if ARCH(AARCH64) || ARCH(RISCV64)
+    MUST(DeviceTree::Management::the().probe_drivers(DeviceTree::Driver::ProbeStage::Early));
+#endif
+
     ACPI::initialize();
 
     // Initialize TimeManagement before using randomness!
@@ -327,24 +332,23 @@ void init_stage2(void*)
 
     // Initialize the PCI Bus as early as possible, for early boot (PCI based) serial logging
     PCI::initialize();
-    if (!PCI::Access::is_disabled()) {
-        PCISerialDevice::detect();
-    }
+    if (!PCI::Access::is_disabled())
+        MUST(PCI::Access::the().probe_drivers());
 
 #if ARCH(X86_64)
     if (!is_serial_debug_enabled())
-        (void)SerialDevice::must_create(0).leak_ref();
-    (void)SerialDevice::must_create(1).leak_ref();
-    (void)SerialDevice::must_create(2).leak_ref();
-    (void)SerialDevice::must_create(3).leak_ref();
+        (void)Serial16550::must_create(0).leak_ref();
+    (void)Serial16550::must_create(1).leak_ref();
+    (void)Serial16550::must_create(2).leak_ref();
+    (void)Serial16550::must_create(3).leak_ref();
 #endif
 
     (void)PCSpeakerDevice::must_create().leak_ref();
 
 #if ARCH(X86_64)
     VMWareBackdoor::the(); // don't wait until first mouse packet
+    MUST(InputManagement::the().initialize_i8042_controller());
 #endif
-    MUST(InputManagement::initialize());
 
     GraphicsManagement::the().initialize();
     VirtualConsole::initialize_consoles();
@@ -354,12 +358,7 @@ void init_stage2(void*)
 
     auto boot_profiling = kernel_command_line().is_boot_profiling_enabled();
 
-    USB::USBManagement::initialize();
     SysFSFirmwareDirectory::initialize();
-
-    if (!PCI::Access::is_disabled()) {
-        VirtIO::detect_pci_instances();
-    }
 
     NetworkingManagement::the().initialize();
 
@@ -414,7 +413,7 @@ void init_stage2(void*)
     dmesgln("Running first user process: {}", userspace_init);
     dmesgln("Init (first) process args: {}", init_args);
 
-    auto init_or_error = Process::create_user_process(userspace_init, UserID(0), GroupID(0), move(init_args), {}, move(first_process_vfs_context), move(hostname_context), tty0);
+    auto init_or_error = Process::create_userland_init_process(userspace_init, move(init_args), move(first_process_vfs_context), move(hostname_context), tty0);
     if (init_or_error.is_error())
         PANIC("init_stage2: Error spawning init process: {}", init_or_error.error());
 
@@ -447,10 +446,10 @@ UNMAP_AFTER_INIT void setup_serial_debug()
     if (s_kernel_cmdline.contains("serial_debug"sv)) {
         set_serial_debug_enabled(true);
     }
-}
 
-// Define some Itanium C++ ABI methods to stop the linker from complaining.
-// If we actually call these something has gone horribly wrong
-void* __dso_handle __attribute__((visibility("hidden")));
+    if (s_kernel_cmdline.contains("pci_serial_debug"sv)) {
+        set_pci_serial_debug_enabled(true);
+    }
+}
 
 }

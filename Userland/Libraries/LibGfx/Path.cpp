@@ -371,6 +371,26 @@ ByteString Path::to_byte_string() const
     return builder.to_byte_string();
 }
 
+Optional<FloatRect> Path::as_rect() const
+{
+    if (m_commands.size() != 6 || m_points.size() != 5)
+        return {};
+    if (m_commands[0] != PathSegment::MoveTo
+        || m_commands[1] != PathSegment::LineTo
+        || m_commands[2] != PathSegment::LineTo
+        || m_commands[3] != PathSegment::LineTo
+        || m_commands[4] != PathSegment::LineTo
+        || m_commands[5] != PathSegment::ClosePath)
+        return {};
+    VERIFY(m_points[0] == m_points[4]);
+    if (m_points[0].y() != m_points[1].y()
+        || m_points[1].x() != m_points[2].x()
+        || m_points[2].y() != m_points[3].y()
+        || m_points[3].x() != m_points[0].x())
+        return {};
+    return FloatRect::from_two_points(m_points[0], m_points[2]);
+}
+
 void Path::segmentize_path()
 {
     Vector<FloatLine> segments;
@@ -405,7 +425,8 @@ void Path::segmentize_path()
             break;
         }
         case PathSegment::ClosePath: {
-            subpath_end_indices.append(segments.size() - 1);
+            if (subpath_end_indices.is_empty() || subpath_end_indices.last() != segments.size() - 1)
+                subpath_end_indices.append(segments.size() - 1);
             break;
         }
         }
@@ -430,6 +451,7 @@ void Path::transform(AffineTransform const& transform)
 {
     for (auto& point : m_points)
         point = transform.map(point);
+    invalidate_split_lines();
 }
 
 void Path::append_path(Path const& path, AppendRelativeToLastPoint relative_to_last_point)
@@ -734,6 +756,7 @@ Path Path::stroke_to_fill(StrokeStyle const& style) const
         return Path {};
 
     auto subpath_end_indices = split_lines_subbpath_end_indices();
+    size_t current_subpath_end_indices_cursor = 0;
 
     // Paths can be disconnected, which a pain to deal with, so split it up.
     // Also filter out duplicate points here (but keep one-point paths around
@@ -742,25 +765,31 @@ Path Path::stroke_to_fill(StrokeStyle const& style) const
     Vector<bool> segment_is_closed;
     segments.append({ lines.first().a() });
     for (auto const& [line_index, line] : enumerate(lines)) {
-        if (line.a() == segments.last().last()) {
+        bool previous_line_closed_segment = false;
+        if (subpath_end_indices.size() > current_subpath_end_indices_cursor)
+            previous_line_closed_segment = subpath_end_indices[current_subpath_end_indices_cursor] == line_index - 1;
+
+        if (line.a() == segments.last().last() && !previous_line_closed_segment) {
             if (line.a() != line.b())
                 segments.last().append(line.b());
         } else {
-            if (subpath_end_indices.size() >= segments.size())
-                segment_is_closed.append(subpath_end_indices[segments.size() - 1] == line_index);
-            else
-                segment_is_closed.append(false);
+            segment_is_closed.append(previous_line_closed_segment);
+            if (previous_line_closed_segment)
+                current_subpath_end_indices_cursor++;
             segments.append({ line.a() });
             if (line.a() != line.b())
                 segments.last().append(line.b());
         }
     }
     if (segment_is_closed.size() < segments.size()) {
-        if (subpath_end_indices.size() >= segments.size())
-            segment_is_closed.append(subpath_end_indices[segments.size() - 1] == lines.size() - 1);
-        else
-            segment_is_closed.append(false);
+        bool previous_line_closed_segment = false;
+        if (subpath_end_indices.size() > current_subpath_end_indices_cursor)
+            previous_line_closed_segment = subpath_end_indices[current_subpath_end_indices_cursor] == lines.size() - 1;
+        segment_is_closed.append(previous_line_closed_segment);
+        if (previous_line_closed_segment)
+            current_subpath_end_indices_cursor++;
         VERIFY(segment_is_closed.size() == segments.size());
+        VERIFY(current_subpath_end_indices_cursor == subpath_end_indices.size());
     }
 
     if (!style.dash_pattern.is_empty())

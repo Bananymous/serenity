@@ -10,6 +10,7 @@
 #include <LibGfx/ICC/Profile.h>
 #include <LibGfx/ImageFormats/BMPLoader.h>
 #include <LibGfx/ImageFormats/DDSLoader.h>
+#include <LibGfx/ImageFormats/DICOMLoader.h>
 #include <LibGfx/ImageFormats/GIFLoader.h>
 #include <LibGfx/ImageFormats/ICOLoader.h>
 #include <LibGfx/ImageFormats/ILBMLoader.h>
@@ -22,12 +23,12 @@
 #include <LibGfx/ImageFormats/JPEG2000TagTree.h>
 #include <LibGfx/ImageFormats/JPEGLoader.h>
 #include <LibGfx/ImageFormats/JPEGXLLoader.h>
+#include <LibGfx/ImageFormats/MQArithmeticCoder.h>
 #include <LibGfx/ImageFormats/PAMLoader.h>
 #include <LibGfx/ImageFormats/PBMLoader.h>
 #include <LibGfx/ImageFormats/PGMLoader.h>
 #include <LibGfx/ImageFormats/PNGLoader.h>
 #include <LibGfx/ImageFormats/PPMLoader.h>
-#include <LibGfx/ImageFormats/QMArithmeticDecoder.h>
 #include <LibGfx/ImageFormats/TGALoader.h>
 #include <LibGfx/ImageFormats/TIFFLoader.h>
 #include <LibGfx/ImageFormats/TIFFMetadata.h>
@@ -325,28 +326,6 @@ TEST_CASE(test_ilbm_malformed_frame)
     }
 }
 
-TEST_CASE(test_jbig2_black_47x23)
-{
-    auto file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("jbig2/black_47x23.jbig2"sv)));
-    EXPECT(Gfx::JBIG2ImageDecoderPlugin::sniff(file->bytes()));
-    auto plugin_decoder = TRY_OR_FAIL(Gfx::JBIG2ImageDecoderPlugin::create(file->bytes()));
-
-    auto frame = TRY_OR_FAIL(expect_single_frame_of_size(*plugin_decoder, { 47, 23 }));
-    for (auto pixel : *frame.image)
-        EXPECT_EQ(pixel, Gfx::Color(Gfx::Color::Black).value());
-}
-
-TEST_CASE(test_jbig2_white_47x23)
-{
-    auto file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("jbig2/white_47x23.jbig2"sv)));
-    EXPECT(Gfx::JBIG2ImageDecoderPlugin::sniff(file->bytes()));
-    auto plugin_decoder = TRY_OR_FAIL(Gfx::JBIG2ImageDecoderPlugin::create(file->bytes()));
-
-    auto frame = TRY_OR_FAIL(expect_single_frame_of_size(*plugin_decoder, { 47, 23 }));
-    for (auto pixel : *frame.image)
-        EXPECT_EQ(pixel, Gfx::Color(Gfx::Color::White).value());
-}
-
 TEST_CASE(test_jbig2_decode)
 {
     auto bmp_file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("bmp/bitmap.bmp"sv)));
@@ -355,9 +334,26 @@ TEST_CASE(test_jbig2_decode)
 
     Array test_inputs = {
         TEST_INPUT("jbig2/bitmap.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-randomaccess.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-p32-eof.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-initially-unknown-size.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-composite-and-xnor.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-composite-and-xnor-halftone.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-composite-and-xnor-refine.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-composite-and-xnor-text.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-composite-or-xor-replace.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-composite-or-xor-replace-halftone.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-composite-or-xor-replace-refine.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-composite-or-xor-replace-text.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-customat.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-tpgdon.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-customat-tpgdon.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-mmr.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-stripe.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-stripe-initially-unknown-height.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-stripe-last-implicit.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-stripe-single.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-stripe-single-no-end-of-stripe.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-template1.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-template1-customat.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-template1-tpgdon.jbig2"sv),
@@ -370,11 +366,71 @@ TEST_CASE(test_jbig2_decode)
         TEST_INPUT("jbig2/bitmap-template3-customat.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-template3-tpgdon.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-template3-customat-tpgdon.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-trailing-7fff-stripped.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-trailing-7fff-stripped-harder.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-trailing-7fff-stripped-harder-refine.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-refine.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-refine-page.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-refine-page-subrect.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-refine-customat.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-refine-lossless.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-refine-refine.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-refine-tpgron.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-refine-template1.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-refine-template1-tpgron.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-composite.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-global.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-grid.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-refine.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-skip-dummy.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-skip-grid.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-skip-grid-template1.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-skip-grid-template2.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-skip-grid-template3.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-template1.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-template2.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-template3.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-10bpp.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-halftone-10bpp-mmr.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-32bit-arithint.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-big-segmentid.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-context-reuse.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-empty.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-global.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-manyrefs.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-negative-sbdsoffset.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-refine.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symhuff-texthuff.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symhuffB5B3-texthuffB7B9B12.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symhuff-texthuffB10B13.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symhuffcustom-texthuffcustom.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symhuffuncompressed-texthuff.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-textcomposite.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-texthuff-runcodes32-34.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-texthuff-trailingsymbols.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol-textrefine.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol-textrefine-customat.jbig2"sv),
-        TEST_INPUT("jbig2/symbol-textrefine-negative-delta-width.jbig2"sv),
-        TEST_INPUT("jbig2/bitmap-symbol-symbolrefine.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-textrefine-negative-delta-width.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-texthuffrefine.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-texthuffrefineB15.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-texthuffrefinecustom.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-texthuffrefinecustomdims.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-texthuffrefinecustompos.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-texthuffrefinecustompos-global.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-texthuffrefinecustomposdims.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-texthuffrefinecustomsize.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symbolrefineone.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symbolrefineone-customat.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symbolrefineone-template1.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symbolrefineseveral.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symhuffrefineone.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symhuffrefineseveral.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symbolrefine-textrefine.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symbolrefine-textrefine-export.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symhuffrefine-textrefine.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-symhuffrefine-textrefine-export.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol-textbottomleft.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol-textbottomlefttranspose.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol-textbottomright.jbig2"sv),
@@ -382,12 +438,17 @@ TEST_CASE(test_jbig2_decode)
         TEST_INPUT("jbig2/bitmap-symbol-texttopright.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol-texttoprighttranspose.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol-texttranspose.jbig2"sv),
+        // Missing tests for things that aren't implemented yet:
+        // - exttemplate
+        // - colors
     };
 
     for (auto test_input : test_inputs) {
         auto file = TRY_OR_FAIL(Core::MappedFile::map(test_input));
         EXPECT(Gfx::JBIG2ImageDecoderPlugin::sniff(file->bytes()));
-        auto plugin_decoder = TRY_OR_FAIL(Gfx::JBIG2ImageDecoderPlugin::create(file->bytes()));
+        Gfx::JBIG2DecoderOptions options;
+        options.log_comments = Gfx::JBIG2DecoderOptions::LogComments::No;
+        auto plugin_decoder = TRY_OR_FAIL(Gfx::JBIG2ImageDecoderPlugin::create_with_options(file->bytes(), options));
 
         auto frame = TRY_OR_FAIL(expect_single_frame_of_size(*plugin_decoder, { 399, 400 }));
 
@@ -395,6 +456,36 @@ TEST_CASE(test_jbig2_decode)
             for (int x = 0; x < frame.image->width(); ++x)
                 EXPECT_EQ(frame.image->get_pixel(x, y), bmp_frame.image->get_pixel(x, y));
     }
+}
+
+TEST_CASE(test_annex_h_jbig2)
+{
+    // https://www.itu.int/rec/T-REC-T.88-201808-I
+    // H.1 Datastream example
+    auto file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("jbig2/annex-h.jbig2"sv)));
+    EXPECT(Gfx::JBIG2ImageDecoderPlugin::sniff(file->bytes()));
+    auto decoder = TRY_OR_FAIL(Gfx::JBIG2ImageDecoderPlugin::create(file->bytes()));
+
+    EXPECT_EQ(decoder->frame_count(), 3u);
+
+    auto frame_1 = TRY_OR_FAIL(decoder->frame(0));
+    EXPECT_EQ(frame_1.image->size(), Gfx::IntSize(64, 56));
+
+    auto frame_2 = TRY_OR_FAIL(decoder->frame(1));
+    EXPECT_EQ(frame_2.image->size(), Gfx::IntSize(64, 56));
+
+    // The first two frames decode to the same image.
+    for (int y = 0; y < frame_1.image->height(); ++y)
+        for (int x = 0; x < frame_1.image->width(); ++x)
+            EXPECT_EQ(frame_1.image->get_pixel(x, y), frame_2.image->get_pixel(x, y));
+
+    auto frame_3 = TRY_OR_FAIL(decoder->frame(2));
+    EXPECT_EQ(frame_3.image->size(), Gfx::IntSize(37, 8));
+
+    // The third frame is a subrect of the first two.
+    for (int y = 0; y < frame_3.image->height(); ++y)
+        for (int x = 0; x < frame_3.image->width(); ++x)
+            EXPECT_EQ(frame_3.image->get_pixel(x, y), frame_2.image->get_pixel(x + 4, y + 1));
 }
 
 TEST_CASE(test_qm_arithmetic_decoder)
@@ -407,7 +498,7 @@ TEST_CASE(test_qm_arithmetic_decoder)
         0x02, 0x20, 0x00, 0x00, 0x41, 0x0D, 0xBB, 0x86,
         0xF4, 0x31, 0x7F, 0xFF, 0x88, 0xFF, 0x37, 0x47,
         0x1A, 0xDB, 0x6A, 0xDF, 0xFF, 0xAC
-        });
+    });
     constexpr auto output = to_array<u8>({
         0x00, 0x02, 0x00, 0x51, 0x00, 0x00, 0x00, 0xC0,
         0x03, 0x52, 0x87, 0x2A, 0xAA, 0xAA, 0xAA, 0xAA,
@@ -417,8 +508,8 @@ TEST_CASE(test_qm_arithmetic_decoder)
     // clang-format on
 
     // "For this entire test, a single value of CX is used. I(CX) is initially 0 and MPS(CX) is initially 0."
-    Gfx::QMArithmeticDecoder::Context context { 0, 0 };
-    auto decoder = MUST(Gfx::QMArithmeticDecoder::initialize(input));
+    Gfx::MQArithmeticCoderContext context { 0, 0 };
+    auto decoder = MUST(Gfx::MQArithmeticDecoder::initialize(input));
 
     for (auto expected : output) {
         u8 actual = 0;
@@ -562,7 +653,8 @@ TEST_CASE(test_jpeg_grayscale_with_weird_mcu_and_reset_marker)
 TEST_CASE(test_jpeg_malformed_header)
 {
     Array test_inputs = {
-        TEST_INPUT("jpg/oss-fuzz-testcase-59785.jpg"sv)
+        TEST_INPUT("jpg/oss-fuzz-testcase-59785.jpg"sv),
+        TEST_INPUT("jpg/clusterfuzz-testcase-minimized-FuzzJPEGLoader-5874221639335936"sv)
     };
 
     for (auto test_input : test_inputs) {
@@ -594,6 +686,15 @@ TEST_CASE(test_jpeg_random_bytes_between_segments)
     auto plugin_decoder = TRY_OR_FAIL(Gfx::JPEGImageDecoderPlugin::create(file->bytes()));
 
     TRY_OR_FAIL(expect_single_frame_of_size(*plugin_decoder, { 16, 16 }));
+}
+
+TEST_CASE(test_jpeg_non_conventional_app_id)
+{
+    auto file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("jpg/non_ascii_app.jpg"sv)));
+    EXPECT(Gfx::JPEGImageDecoderPlugin::sniff(file->bytes()));
+    auto plugin_decoder = TRY_OR_FAIL(Gfx::JPEGImageDecoderPlugin::create(file->bytes()));
+
+    TRY_OR_FAIL(expect_single_frame_of_size(*plugin_decoder, { 80, 80 }));
 }
 
 TEST_CASE(test_jpeg2000_spec_annex_j_10_bitplane_decoding)
@@ -2183,6 +2284,28 @@ TEST_CASE(test_jxl_palette_and_groups)
     EXPECT_EQ(frame.image->get_pixel(20, 130), Gfx::Color::from_string("#0b1112"sv));
 }
 
+TEST_CASE(test_jxl_xyb)
+{
+    auto reference_file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("png/buggie.png"sv)));
+    auto reference_decoder = TRY_OR_FAIL(Gfx::PNGImageDecoderPlugin::create(reference_file->bytes()));
+    auto reference_frame = TRY_OR_FAIL(reference_decoder->frame(0));
+
+    auto file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("jxl/xyb.jxl"sv)));
+    EXPECT(Gfx::JPEGXLImageDecoderPlugin::sniff(file->bytes()));
+    auto plugin_decoder = TRY_OR_FAIL(Gfx::JPEGXLImageDecoderPlugin::create(file->bytes()));
+
+    TRY_OR_FAIL(expect_single_frame_of_size(*plugin_decoder, reference_frame.image->size()));
+    auto frame = TRY_OR_FAIL(plugin_decoder->frame(0));
+    for (i32 y = 0; y < reference_frame.image->height(); ++y) {
+        for (i32 x = 0; x < reference_frame.image->width(); ++x) {
+            auto color = frame.image->get_pixel(x, y);
+            auto reference_color = frame.image->get_pixel(x, y);
+            u32 diff = abs(reference_color.red() - color.red()) + abs(reference_color.green() - color.green()) + abs(reference_color.blue() - color.blue()) + abs(reference_color.alpha() - color.alpha());
+            EXPECT(diff <= 1);
+        }
+    }
+}
+
 TEST_CASE(test_dds)
 {
     Array file_names = {
@@ -2196,4 +2319,22 @@ TEST_CASE(test_dds)
         auto plugin_decoder = TRY_OR_FAIL(Gfx::DDSImageDecoderPlugin::create(file->bytes()));
         TRY_OR_FAIL(expect_single_frame(*plugin_decoder));
     }
+}
+
+TEST_CASE(test_dicom)
+{
+    // This is used as a reference
+    auto reference_file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("pnm/buggie-raw.pgm"sv)));
+    auto reference_decoder = TRY_OR_FAIL(Gfx::PGMImageDecoderPlugin::create(reference_file->bytes()));
+    auto reference_frame = TRY_OR_FAIL(reference_decoder->frame(0));
+
+    auto file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("dicom/buggie.dcm"sv)));
+    EXPECT(Gfx::DICOMImageDecoderPlugin::sniff(file->bytes()));
+    auto plugin_decoder = TRY_OR_FAIL(Gfx::DICOMImageDecoderPlugin::create(file->bytes()));
+
+    auto frame = TRY_OR_FAIL(expect_single_frame_of_size(*plugin_decoder, { 100, 220 }));
+
+    for (int y = 0; y < frame.image->height(); ++y)
+        for (int x = 0; x < frame.image->width(); ++x)
+            EXPECT_EQ(frame.image->get_pixel(x, y), reference_frame.image->get_pixel(x, y));
 }

@@ -110,9 +110,9 @@ inline constexpr bool IsFunction<Ret(Args...) const volatile> = true;
 template<class Ret, class... Args>
 inline constexpr bool IsFunction<Ret(Args..., ...) const volatile> = true;
 template<class Ret, class... Args>
-inline constexpr bool IsFunction<Ret(Args...)&> = true;
+inline constexpr bool IsFunction<Ret(Args...) &> = true;
 template<class Ret, class... Args>
-inline constexpr bool IsFunction<Ret(Args..., ...)&> = true;
+inline constexpr bool IsFunction<Ret(Args..., ...) &> = true;
 template<class Ret, class... Args>
 inline constexpr bool IsFunction<Ret(Args...) const&> = true;
 template<class Ret, class... Args>
@@ -262,12 +262,6 @@ template<>
 struct __MakeUnsigned<bool> {
     using Type = bool;
 };
-#if ARCH(AARCH64)
-template<>
-struct __MakeUnsigned<wchar_t> {
-    using Type = wchar_t;
-};
-#endif
 
 template<typename T>
 using MakeUnsigned = typename __MakeUnsigned<T>::Type;
@@ -304,6 +298,12 @@ inline constexpr bool IsConst = false;
 
 template<class T>
 inline constexpr bool IsConst<T const> = true;
+
+template<class T>
+inline constexpr bool IsVolatile = false;
+
+template<class T>
+inline constexpr bool IsVolatile<T volatile> = true;
 
 template<typename T>
 inline constexpr bool IsEnum = __is_enum(T);
@@ -365,12 +365,6 @@ using Void = void;
 template<typename... _Ignored>
 constexpr auto DependentFalse = false;
 
-template<typename T>
-inline constexpr bool IsSigned = IsSame<T, MakeSigned<T>>;
-
-template<typename T>
-inline constexpr bool IsUnsigned = IsSame<T, MakeUnsigned<T>>;
-
 #ifndef KERNEL
 template<typename T>
 inline constexpr bool IsArithmetic = IsIntegral<T> || IsFloatingPoint<T>;
@@ -378,6 +372,18 @@ inline constexpr bool IsArithmetic = IsIntegral<T> || IsFloatingPoint<T>;
 template<typename T>
 inline constexpr bool IsArithmetic = IsIntegral<T>;
 #endif
+
+template<typename T, bool = IsArithmetic<T>>
+inline constexpr bool IsSigned = T(-1) < T(0);
+
+template<typename T>
+inline constexpr bool IsSigned<T, false> = false;
+
+template<typename T, bool = IsArithmetic<T>>
+inline constexpr bool IsUnsigned = T(0) < T(-1);
+
+template<typename T>
+inline constexpr bool IsUnsigned<T, false> = false;
 
 template<typename T>
 inline constexpr bool IsFundamental = IsArithmetic<T> || IsVoid<T> || IsNullPointer<T>;
@@ -520,6 +526,9 @@ inline constexpr bool IsMoveAssignable = IsAssignable<AddLvalueReference<T>, Add
 template<typename T>
 inline constexpr bool IsTriviallyMoveAssignable = IsTriviallyAssignable<AddLvalueReference<T>, AddRvalueReference<T>>;
 
+template<typename T>
+inline constexpr bool IsPolymorphic = __is_polymorphic(T);
+
 template<typename T, template<typename...> typename U>
 inline constexpr bool IsSpecializationOf = false;
 
@@ -660,6 +669,7 @@ using AK::Detail::IsOneOf;
 using AK::Detail::IsOneOfIgnoringCV;
 using AK::Detail::IsPOD;
 using AK::Detail::IsPointer;
+using AK::Detail::IsPolymorphic;
 using AK::Detail::IsRvalueReference;
 using AK::Detail::IsSame;
 using AK::Detail::IsSameIgnoringCV;
@@ -678,6 +688,7 @@ using AK::Detail::IsTriviallyMoveConstructible;
 using AK::Detail::IsUnion;
 using AK::Detail::IsUnsigned;
 using AK::Detail::IsVoid;
+using AK::Detail::IsVolatile;
 using AK::Detail::MakeIndexSequence;
 using AK::Detail::MakeIntegerSequence;
 using AK::Detail::MakeSigned;

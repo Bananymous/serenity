@@ -134,7 +134,7 @@ bool VirtualFileSystem::check_matching_absolute_path_hierarchy(Custody const& fi
     while (custody1->parent()) {
         if (!custody2->parent())
             return false;
-        if (custody1->parent().ptr() != custody2->parent().ptr())
+        if (&custody1->parent()->inode() != &custody2->parent()->inode())
             return false;
         custody1 = custody1->parent();
         custody2 = custody2->parent();
@@ -242,13 +242,6 @@ ErrorOr<void> VirtualFileSystem::copy_mount(Custody& original_custody, VFSRootCo
     if (&original_custody.inode() != &original_custody.inode().fs().root_inode())
         return EINVAL;
 
-    // NOTE: If the user specified the root custody ("/") on the destination context
-    // then try to `pivot_root` the destination context root mount with the desired
-    // custody.
-    auto destination_context_root_custody = destination_context.root_custody().with([](auto& custody) -> NonnullRefPtr<Custody> { return custody; });
-    if (&new_mount_point == destination_context_root_custody.ptr())
-        return pivot_root_by_copying_mounted_fs_instance(destination_context, original_custody.inode().fs(), flags);
-
     TRY(destination_context.add_new_mount(VFSRootContext::DoBindMount::No, original_custody.inode(), new_mount_point, flags));
     return {};
 }
@@ -273,7 +266,7 @@ void VirtualFileSystem::sync_filesystems()
     Vector<NonnullRefPtr<FileSystem>, 32> file_systems;
     s_details->file_systems_list.with([&](auto const& list) {
         for (auto& fs : list)
-            file_systems.append(fs);
+            file_systems.try_append(fs).release_value_but_fixme_should_propagate_errors();
     });
 
     for (auto& fs : file_systems) {
@@ -313,16 +306,6 @@ ErrorOr<void> VirtualFileSystem::remove_mount(Mount& mount, FileBackedFileSystem
     });
     Mount::delete_mount_from_list(mount);
     return {};
-}
-
-ErrorOr<void> VirtualFileSystem::pivot_root_by_copying_mounted_fs_instance(VFSRootContext& context, FileSystem& fs, int root_mount_flags)
-{
-    auto root_mount_point = TRY(Custody::try_create(nullptr, ""sv, fs.root_inode(), root_mount_flags));
-    auto new_mount = TRY(adopt_nonnull_own_or_enomem(new (nothrow) Mount(fs.root_inode(), root_mount_flags)));
-
-    return s_details->file_backed_file_systems_list.with_exclusive([&](auto& file_backed_file_systems_list) -> ErrorOr<void> {
-        return context.pivot_root(file_backed_file_systems_list, fs, move(new_mount), move(root_mount_point), root_mount_flags);
-    });
 }
 
 ErrorOr<void> VirtualFileSystem::unmount(VFSRootContext& context, Inode& guest_inode, StringView custody_path)
@@ -446,7 +429,10 @@ ErrorOr<NonnullRefPtr<OpenFileDescription>> VirtualFileSystem::open(Process cons
         if (custody.mount_flags() & MS_NODEV)
             return EACCES;
         auto device_type = metadata.is_block_device() ? DeviceNodeType::Block : DeviceNodeType::Character;
-        auto device = Device::acquire_by_type_and_major_minor_numbers(device_type, metadata.major_device, metadata.minor_device);
+        RefPtr<Device> device;
+        Device::run_by_type_and_major_minor_numbers(device_type, metadata.major_device, metadata.minor_device, [&](RefPtr<Device> found_device) {
+            device = move(found_device);
+        });
         if (device == nullptr) {
             return ENODEV;
         }

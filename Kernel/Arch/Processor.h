@@ -10,15 +10,10 @@
 #include <AK/Function.h>
 #include <AK/SetOnce.h>
 #include <Kernel/Arch/CPUID.h>
-#include <Kernel/Arch/DeferredCallEntry.h>
 #include <Kernel/Arch/DeferredCallPool.h>
 #include <Kernel/Arch/FPUState.h>
 #include <Kernel/Arch/ProcessorSpecificDataID.h>
 #include <Kernel/Memory/VirtualAddress.h>
-
-#if ARCH(X86_64)
-#    include <Kernel/Arch/x86_64/DescriptorTable.h>
-#endif
 
 namespace Kernel {
 
@@ -48,7 +43,6 @@ extern "C" void thread_context_first_enter(void);
 extern "C" void do_assume_context(Thread* thread, u32 flags);
 extern "C" FlatPtr do_init_context(Thread* thread, u32) __attribute__((used));
 
-template<typename ProcessorT>
 class ProcessorBase {
 public:
     template<typename T>
@@ -76,11 +70,11 @@ public:
     ALWAYS_INLINE static bool is_initialized();
 
     [[noreturn]] static void halt();
-    void wait_for_interrupt() const;
+    void idle() const;
     ALWAYS_INLINE static void pause();
     ALWAYS_INLINE static void wait_check();
 
-    ALWAYS_INLINE static ProcessorT& current();
+    ALWAYS_INLINE static Processor& current();
     static Processor& by_id(u32);
 
     ALWAYS_INLINE u32 id() const
@@ -94,7 +88,10 @@ public:
     }
 
     ALWAYS_INLINE static u32 current_id();
-    ALWAYS_INLINE static bool is_bootstrap_processor();
+    ALWAYS_INLINE static bool is_bootstrap_processor()
+    {
+        return current_id() == 0;
+    }
     ALWAYS_INLINE bool has_nx() const;
     ALWAYS_INLINE bool has_feature(CPUFeature::Type const& feature) const
     {
@@ -161,6 +158,8 @@ public:
         return m_virtual_address_bit_width;
     }
 
+    static void store_fpu_state(FPUState&);
+    static void load_fpu_state(FPUState const&);
     ALWAYS_INLINE static FPUState const& clean_fpu_state() { return s_clean_fpu_state; }
 
     static void deferred_call_queue(Function<void()> callback);
@@ -172,7 +171,7 @@ public:
     static ErrorOr<Vector<FlatPtr, 32>> capture_stack_trace(Thread& thread, size_t max_frames = 0);
 
 protected:
-    ProcessorT* m_self;
+    Processor* m_self;
     CPUFeature::Type m_features;
 
     Atomic<bool> m_halt_requested;
@@ -201,7 +200,7 @@ private:
     DeferredCallPool m_deferred_call_pool {};
 };
 
-template class ProcessorBase<Processor>;
+static_assert(!IsPolymorphic<ProcessorBase>); // We don't want runtime polymorphism in such a low-level class.
 
 }
 
@@ -216,27 +215,6 @@ template class ProcessorBase<Processor>;
 #endif
 
 namespace Kernel {
-
-template<typename T>
-ALWAYS_INLINE bool ProcessorBase<T>::is_bootstrap_processor()
-{
-    return current_id() == 0;
-}
-
-template<typename T>
-InterruptsState ProcessorBase<T>::interrupts_state()
-{
-    return Processor::are_interrupts_enabled() ? InterruptsState::Enabled : InterruptsState::Disabled;
-}
-
-template<typename T>
-void ProcessorBase<T>::restore_interrupts_state(InterruptsState interrupts_state)
-{
-    if (interrupts_state == InterruptsState::Enabled)
-        Processor::enable_interrupts();
-    else
-        Processor::disable_interrupts();
-}
 
 struct ProcessorMessageEntry;
 struct ProcessorMessage {

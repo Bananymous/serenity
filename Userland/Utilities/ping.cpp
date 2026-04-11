@@ -6,6 +6,7 @@
 
 #include <AK/Assertions.h>
 #include <AK/ByteBuffer.h>
+#include <AK/InternetChecksum.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/System.h>
 #include <LibMain/Main.h>
@@ -15,7 +16,6 @@
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
-#include <serenity.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -212,7 +212,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
             ping_packet[i + sizeof(struct icmphdr)] = i & 0xFF;
         }
 
-        ping_hdr->checksum = internet_checksum(ping_packet.data(), ping_packet.size());
+        ping_hdr->checksum = bit_cast<u16>(InternetChecksum({ ping_packet.data(), ping_packet.size() }).digest());
 
         struct timeval tv_send;
         gettimeofday(&tv_send, nullptr);

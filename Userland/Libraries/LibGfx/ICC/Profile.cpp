@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2023, Nico Weber <thakis@chromium.org>
+ * Copyright (c) 2022-2025, Nico Weber <thakis@chromium.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -180,6 +180,8 @@ ErrorOr<Optional<PrimaryPlatform>> parse_primary_platform(ICCHeader const& heade
     case PrimaryPlatform::Microsoft:
     case PrimaryPlatform::SiliconGraphics:
     case PrimaryPlatform::Sun:
+    case PrimaryPlatform::V2_Only_Taligent:
+    case PrimaryPlatform::NotSpecCompliant_Unix:
         return header.primary_platform;
     }
     return Error::from_string_literal("ICC::Profile: Invalid primary platform");
@@ -1282,12 +1284,12 @@ ErrorOr<FloatVector3> Profile::to_pcs_a_to_b(TagData const& tag_data, ReadonlyBy
     switch (tag_data.type()) {
     case Lut16TagData::Type: {
         auto const& a_to_b = static_cast<Lut16TagData const&>(tag_data);
-        result = TRY(a_to_b.evaluate(data_color_space(), connection_space(), color));
+        result = TRY(a_to_b.evaluate_to_pcs(data_color_space(), connection_space(), color));
         break;
     }
     case Lut8TagData::Type: {
         auto const& a_to_b = static_cast<Lut8TagData const&>(tag_data);
-        result = TRY(a_to_b.evaluate(data_color_space(), connection_space(), color));
+        result = TRY(a_to_b.evaluate_to_pcs(data_color_space(), connection_space(), color));
         break;
     }
     case LutAToBTagData::Type: {
@@ -1491,12 +1493,14 @@ static TagSignature backward_transform_tag_for_rendering_intent(RenderingIntent 
 ErrorOr<void> Profile::from_pcs_b_to_a(TagData const& tag_data, FloatVector3 const& pcs, Bytes out_bytes) const
 {
     switch (tag_data.type()) {
-    case Lut16TagData::Type:
-        // FIXME
-        return Error::from_string_literal("ICC::Profile::to_pcs: BToA*Tag handling for mft2 tags not yet implemented");
-    case Lut8TagData::Type:
-        // FIXME
-        return Error::from_string_literal("ICC::Profile::to_pcs: BToA*Tag handling for mft1 tags not yet implemented");
+    case Lut16TagData::Type: {
+        auto const& a_to_b = static_cast<Lut16TagData const&>(tag_data);
+        return a_to_b.evaluate_from_pcs(connection_space(), data_color_space(), pcs, out_bytes);
+    }
+    case Lut8TagData::Type: {
+        auto const& a_to_b = static_cast<Lut8TagData const&>(tag_data);
+        return a_to_b.evaluate_from_pcs(connection_space(), data_color_space(), pcs, out_bytes);
+    }
     case LutBToATagData::Type: {
         auto const& b_to_a = static_cast<LutBToATagData const&>(tag_data);
         if (b_to_a.number_of_input_channels() != number_of_components_in_color_space(connection_space()))
@@ -1513,12 +1517,17 @@ ErrorOr<void> Profile::from_pcs_b_to_a(TagData const& tag_data, FloatVector3 con
 
 ErrorOr<void> Profile::from_pcs(Profile const& source_profile, FloatVector3 pcs, Bytes color) const
 {
-    if (source_profile.connection_space() != connection_space()) {
-        if (source_profile.connection_space() == ColorSpace::PCSLAB) {
+    return from_pcs(source_profile.connection_space(), source_profile.pcs_illuminant(), pcs, color);
+}
+
+ErrorOr<void> Profile::from_pcs(ColorSpace source_connection_space, XYZ const& source_illuminant, FloatVector3 pcs, Bytes color) const
+{
+    if (source_connection_space != connection_space()) {
+        if (source_connection_space == ColorSpace::PCSLAB) {
             VERIFY(connection_space() == ColorSpace::PCSXYZ);
-            pcs = xyz_from_lab(pcs, source_profile.pcs_illuminant());
+            pcs = xyz_from_lab(pcs, source_illuminant);
         } else {
-            VERIFY(source_profile.connection_space() == ColorSpace::PCSXYZ);
+            VERIFY(source_connection_space == ColorSpace::PCSXYZ);
             VERIFY(connection_space() == ColorSpace::PCSLAB);
             pcs = lab_from_xyz(pcs, pcs_illuminant());
         }
@@ -1752,6 +1761,43 @@ ErrorOr<void> Profile::convert_cmyk_image(Bitmap& out, CMYKBitmap const& in, Pro
         u8 rgb[3];
         TRY(from_pcs(source_profile, pcs, rgb));
         out_data[i] = Color(rgb[0], rgb[1], rgb[2]).value();
+    }
+
+    return {};
+}
+
+ErrorOr<void> Profile::convert_cmyk_image_to_cmyk_image(CMYKBitmap& bitmap, Profile const& source_profile) const
+{
+    for (auto& pixel : bitmap) {
+        u8 cmyk[] = { pixel.c, pixel.m, pixel.y, pixel.k };
+        auto pcs = TRY(source_profile.to_pcs(cmyk));
+        TRY(from_pcs(source_profile, pcs, cmyk));
+        pixel = CMYK { cmyk[0], cmyk[1], cmyk[2], cmyk[3] };
+    }
+
+    return {};
+}
+
+ErrorOr<void> Profile::convert_image_to_cmyk_image(CMYKBitmap& out, Bitmap const& in, Profile const& source_profile) const
+{
+    if (out.size() != in.size())
+        return Error::from_string_literal("ICC::Profile::convert_image_to_cmyk_image: out and in must have the same dimensions");
+
+    // Might fail if `out` has a scale_factor() != 1.
+    if (out.data_size() != in.data_size())
+        return Error::from_string_literal("ICC::Profile::convert_image_to_cmyk_image: out and in must have the same buffer size");
+
+    static_assert(sizeof(ARGB32) == sizeof(CMYK));
+    CMYK* out_data = out.begin();
+    ARGB32 const* in_data = in.begin();
+
+    for (size_t i = 0; i < in.data_size() / sizeof(CMYK); ++i) {
+        u8 rgb[] = { Color::from_argb(in_data[i]).red(), Color::from_argb(in_data[i]).green(), Color::from_argb(in_data[i]).blue() };
+        auto pcs = TRY(source_profile.to_pcs(rgb));
+
+        u8 cmyk[4];
+        TRY(from_pcs(source_profile, pcs, cmyk));
+        out_data[i] = CMYK { cmyk[0], cmyk[1], cmyk[2], cmyk[3] };
     }
 
     return {};

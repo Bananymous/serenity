@@ -32,20 +32,20 @@ PDFErrorOr<ColorSpaceFamily> ColorSpaceFamily::get(DeprecatedFlyString const& fa
     return Error(Error::Type::MalformedPDF, "Unknown ColorSpace family"_string);
 }
 
-PDFErrorOr<NonnullRefPtr<ColorSpace>> ColorSpace::create(Document* document, NonnullRefPtr<Object> color_space_object, Renderer& renderer)
+PDFErrorOr<NonnullRefPtr<ColorSpace>> ColorSpace::create(Document* document, NonnullRefPtr<Object> color_space_object, Renderer& renderer, Optional<NonnullRefPtr<DictObject>> extra_resources)
 {
     // "A color space is defined by an array object whose first element is a name object identifying the color space family.
     //  The remaining array elements, if any, are parameters that further characterize the color space;
     //  their number and types vary according to the particular family.
     //  For families that do not require parameters, the color space can be specified simply by the family name itself instead of an array."
     if (color_space_object->is<NameObject>())
-        return ColorSpace::create(color_space_object->cast<NameObject>()->name(), renderer);
+        return ColorSpace::create(color_space_object->cast<NameObject>()->name(), renderer, extra_resources);
     if (color_space_object->is<ArrayObject>())
-        return ColorSpace::create(document, color_space_object->cast<ArrayObject>(), renderer);
+        return ColorSpace::create(document, color_space_object->cast<ArrayObject>(), renderer, extra_resources);
     return Error { Error::Type::MalformedPDF, "Color space must be name or array" };
 }
 
-PDFErrorOr<NonnullRefPtr<ColorSpace>> ColorSpace::create(DeprecatedFlyString const& name, Renderer&)
+PDFErrorOr<NonnullRefPtr<ColorSpace>> ColorSpace::create(DeprecatedFlyString const& name, Renderer& renderer, Optional<NonnullRefPtr<DictObject>> extra_resources)
 {
     // Simple color spaces with no parameters, which can be specified directly
     if (name == CommonNames::DeviceGray)
@@ -55,11 +55,11 @@ PDFErrorOr<NonnullRefPtr<ColorSpace>> ColorSpace::create(DeprecatedFlyString con
     if (name == CommonNames::DeviceCMYK)
         return TRY(DeviceCMYKColorSpace::the());
     if (name == CommonNames::Pattern)
-        return Error::rendering_unsupported_error("Pattern color spaces not yet implemented");
+        return PatternColorSpace::create(renderer, extra_resources);
     VERIFY_NOT_REACHED();
 }
 
-PDFErrorOr<NonnullRefPtr<ColorSpace>> ColorSpace::create(Document* document, NonnullRefPtr<ArrayObject> color_space_array, Renderer& renderer)
+PDFErrorOr<NonnullRefPtr<ColorSpace>> ColorSpace::create(Document* document, NonnullRefPtr<ArrayObject> color_space_array, Renderer& renderer, Optional<NonnullRefPtr<DictObject>> extra_resources)
 {
     auto color_space_name = TRY(color_space_array->get_name_at(document, 0))->name();
 
@@ -86,11 +86,11 @@ PDFErrorOr<NonnullRefPtr<ColorSpace>> ColorSpace::create(Document* document, Non
     if (color_space_name == CommonNames::Lab)
         return TRY(LabColorSpace::create(document, move(parameters)));
 
-    if (color_space_name == CommonNames::Pattern)
-        return Error::rendering_unsupported_error("Pattern color spaces not yet implemented");
-
     if (color_space_name == CommonNames::Separation)
         return TRY(SeparationColorSpace::create(document, move(parameters), renderer));
+
+    if (color_space_name == CommonNames::Pattern)
+        return PatternColorSpace::create(renderer, extra_resources);
 
     dbgln("Unknown color space: {}", color_space_name);
     return Error::rendering_unsupported_error("unknown color space");
@@ -105,7 +105,7 @@ NonnullRefPtr<DeviceGrayColorSpace> DeviceGrayColorSpace::the()
 PDFErrorOr<ColorOrStyle> DeviceGrayColorSpace::style(ReadonlySpan<float> arguments) const
 {
     VERIFY(arguments.size() == 1);
-    auto gray = static_cast<u8>(arguments[0] * 255.0f);
+    auto gray = round_to<u8>(clamp(arguments[0] * 255.0f, 0.0f, 255.0f));
     return Color(gray, gray, gray);
 }
 
@@ -123,9 +123,9 @@ NonnullRefPtr<DeviceRGBColorSpace> DeviceRGBColorSpace::the()
 PDFErrorOr<ColorOrStyle> DeviceRGBColorSpace::style(ReadonlySpan<float> arguments) const
 {
     VERIFY(arguments.size() == 3);
-    auto r = static_cast<u8>(arguments[0] * 255.0f);
-    auto g = static_cast<u8>(arguments[1] * 255.0f);
-    auto b = static_cast<u8>(arguments[2] * 255.0f);
+    auto r = round_to<u8>(clamp(arguments[0] * 255.0f, 0.0f, 255.0f));
+    auto g = round_to<u8>(clamp(arguments[1] * 255.0f, 0.0f, 255.0f));
+    auto b = round_to<u8>(clamp(arguments[2] * 255.0f, 0.0f, 255.0f));
     return Color(r, g, b);
 }
 
@@ -160,10 +160,10 @@ PDFErrorOr<ColorOrStyle> DeviceCMYKColorSpace::style(ReadonlySpan<float> argumen
     VERIFY(arguments.size() == 4);
 
     u8 bytes[4];
-    bytes[0] = static_cast<u8>(arguments[0] * 255.0f);
-    bytes[1] = static_cast<u8>(arguments[1] * 255.0f);
-    bytes[2] = static_cast<u8>(arguments[2] * 255.0f);
-    bytes[3] = static_cast<u8>(arguments[3] * 255.0f);
+    bytes[0] = round_to<u8>(clamp(arguments[0] * 255.0f, 0.0f, 255.0f));
+    bytes[1] = round_to<u8>(clamp(arguments[1] * 255.0f, 0.0f, 255.0f));
+    bytes[2] = round_to<u8>(clamp(arguments[2] * 255.0f, 0.0f, 255.0f));
+    bytes[3] = round_to<u8>(clamp(arguments[3] * 255.0f, 0.0f, 255.0f));
     auto pcs = TRY(s_default_cmyk_profile->to_pcs(bytes));
 
     Array<u8, 3> output;
@@ -384,9 +384,9 @@ PDFErrorOr<ColorOrStyle> CalGrayColorSpace::style(ReadonlySpan<float> arguments)
     auto d65_normalized = convert_to_d65(scaled_black_point_xyz);
     auto srgb = convert_to_srgb(d65_normalized);
 
-    auto red = static_cast<u8>(clamp(srgb[0], 0.0f, 1.0f) * 255.0f);
-    auto green = static_cast<u8>(clamp(srgb[1], 0.0f, 1.0f) * 255.0f);
-    auto blue = static_cast<u8>(clamp(srgb[2], 0.0f, 1.0f) * 255.0f);
+    auto red = round_to<u8>(clamp(srgb[0], 0.0f, 1.0f) * 255.0f);
+    auto green = round_to<u8>(clamp(srgb[1], 0.0f, 1.0f) * 255.0f);
+    auto blue = round_to<u8>(clamp(srgb[2], 0.0f, 1.0f) * 255.0f);
 
     return Color(red, green, blue);
 }
@@ -474,9 +474,9 @@ PDFErrorOr<ColorOrStyle> CalRGBColorSpace::style(ReadonlySpan<float> arguments) 
     auto d65_normalized = convert_to_d65(scaled_black_point_xyz);
     auto srgb = convert_to_srgb(d65_normalized);
 
-    auto red = static_cast<u8>(clamp(srgb[0], 0.0f, 1.0f) * 255.0f);
-    auto green = static_cast<u8>(clamp(srgb[1], 0.0f, 1.0f) * 255.0f);
-    auto blue = static_cast<u8>(clamp(srgb[2], 0.0f, 1.0f) * 255.0f);
+    auto red = round_to<u8>(clamp(srgb[0], 0.0f, 1.0f) * 255.0f);
+    auto green = round_to<u8>(clamp(srgb[1], 0.0f, 1.0f) * 255.0f);
+    auto blue = round_to<u8>(clamp(srgb[2], 0.0f, 1.0f) * 255.0f);
 
     return Color(red, green, blue);
 }
@@ -535,11 +535,11 @@ PDFErrorOr<ColorOrStyle> ICCBasedColorSpace::style(ReadonlySpan<float> arguments
     }
 
     if (m_map.has_value())
-        return m_map->map(FloatVector3 { arguments[0], arguments[1], arguments[2] });
+        return m_map->map(FloatVector3 { clamp(arguments[0], 0.0f, 1.0f), clamp(arguments[1], 0.0f, 1.0f), clamp(arguments[2], 0.0f, 1.0f) });
 
     m_bytes.resize(arguments.size());
     for (size_t i = 0; i < arguments.size(); ++i)
-        m_bytes[i] = static_cast<u8>(arguments[i] * 255.0f);
+        m_bytes[i] = round_to<u8>(clamp(arguments[i] * 255.0f, 0.0f, 255.0f));
 
     auto pcs = TRY(m_profile->to_pcs(m_bytes));
     Array<u8, 3> output;
@@ -651,9 +651,9 @@ PDFErrorOr<ColorOrStyle> LabColorSpace::style(ReadonlySpan<float> arguments) con
     auto d65_normalized = convert_to_d65(scaled_black_point_xyz);
     auto srgb = convert_to_srgb(d65_normalized);
 
-    auto red = static_cast<u8>(clamp(srgb[0], 0.0f, 1.0f) * 255.0f);
-    auto green = static_cast<u8>(clamp(srgb[1], 0.0f, 1.0f) * 255.0f);
-    auto blue = static_cast<u8>(clamp(srgb[2], 0.0f, 1.0f) * 255.0f);
+    auto red = round_to<u8>(clamp(srgb[0], 0.0f, 1.0f) * 255.0f);
+    auto green = round_to<u8>(clamp(srgb[1], 0.0f, 1.0f) * 255.0f);
+    auto blue = round_to<u8>(clamp(srgb[2], 0.0f, 1.0f) * 255.0f);
 
     return Color(red, green, blue);
 }
@@ -703,7 +703,8 @@ PDFErrorOr<NonnullRefPtr<ColorSpace>> IndexedColorSpace::create(Document* docume
         return Error { Error::Type::MalformedPDF, "Indexed color space expects stream or string for third arg" };
     }
 
-    size_t needed_size = (hival + 1) * base->number_of_components();
+    size_t const n = base->number_of_components();
+    size_t needed_size = (hival + 1) * n;
     if (lookup.size() - 1 == needed_size) {
         // FIXME: Could do this if lookup.size() > needed_size generally, but so far I've only seen files that had one byte too much.
         lookup.resize(needed_size);
@@ -713,13 +714,19 @@ PDFErrorOr<NonnullRefPtr<ColorSpace>> IndexedColorSpace::create(Document* docume
         return Error { Error::Type::MalformedPDF, "Indexed color space lookup table doesn't match size" };
     }
 
-    auto color_space = adopt_ref(*new IndexedColorSpace(move(base)));
+    Vector<float> lookup_float;
+    auto decode = base->default_decode();
+    lookup_float.resize(lookup.size());
+    for (size_t i = 0; i < lookup.size(); ++i)
+        lookup_float[i] = mix(decode[2 * (i % n)], decode[2 * (i % n) + 1], lookup[i] / 255.0f);
+
+    auto color_space = adopt_ref(*new IndexedColorSpace(move(verify_cast<ColorSpaceWithFloatArgs>(*base))));
     color_space->m_hival = hival;
-    color_space->m_lookup = move(lookup);
+    color_space->m_lookup = move(lookup_float);
     return color_space;
 }
 
-IndexedColorSpace::IndexedColorSpace(NonnullRefPtr<ColorSpace> base)
+IndexedColorSpace::IndexedColorSpace(NonnullRefPtr<ColorSpaceWithFloatArgs> base)
     : m_base(move(base))
 {
 }
@@ -727,17 +734,8 @@ IndexedColorSpace::IndexedColorSpace(NonnullRefPtr<ColorSpace> base)
 PDFErrorOr<ColorOrStyle> IndexedColorSpace::style(ReadonlySpan<float> arguments) const
 {
     VERIFY(arguments.size() == 1);
-
     auto index = static_cast<int>(arguments[0]);
-    if (index < 0 || index > m_hival)
-        return Error { Error::Type::MalformedPDF, "Indexed color space index out of range" };
-
-    Vector<Value, 4> components;
-    size_t const n = m_base->number_of_components();
-    for (size_t i = 0; i < n; ++i)
-        TRY(components.try_append(Value(m_lookup[index * n + i] / 255.0f)));
-
-    return m_base->style(components);
+    return m_base->style(TRY(base_components(index)));
 }
 
 Vector<float> IndexedColorSpace::default_decode() const
@@ -803,5 +801,130 @@ PDFErrorOr<ColorOrStyle> SeparationColorSpace::style(ReadonlySpan<float> argumen
 Vector<float> SeparationColorSpace::default_decode() const
 {
     return { 0.0f, 1.0f };
+}
+NonnullRefPtr<PatternColorSpace> PatternColorSpace::create(Renderer& renderer, Optional<NonnullRefPtr<DictObject>> extra_resources)
+{
+    return adopt_ref(*new PatternColorSpace(renderer, extra_resources));
+}
+
+PDFErrorOr<ColorOrStyle> PatternColorSpace::style(ReadonlySpan<Value> arguments) const
+{
+    VERIFY(arguments.size() >= 1);
+
+    auto resources = m_extra_resources.value_or(m_renderer.m_page.resources);
+    if (!resources->contains(CommonNames::Pattern))
+        return Error::malformed_error("Pattern resource dictionary missing");
+
+    auto pattern_resource = resources->get_value(CommonNames::Pattern);
+    auto* maybe_doc_pattern_dict = pattern_resource.get_pointer<NonnullRefPtr<Object>>();
+    if (!maybe_doc_pattern_dict || !(*maybe_doc_pattern_dict)->is<DictObject>())
+        return Error::malformed_error("Pattern resource dictionary not DictObject");
+
+    auto doc_pattern_dict = (*maybe_doc_pattern_dict)->cast<DictObject>();
+    auto const& pattern_name = arguments.last().get<NonnullRefPtr<Object>>()->cast<NameObject>()->name();
+    if (!doc_pattern_dict->contains(pattern_name))
+        return Error::malformed_error("Pattern dictionary does not contain pattern {}", pattern_name);
+
+    auto const pattern = TRY(m_renderer.m_document->resolve_to<Object>(doc_pattern_dict->get_value(pattern_name)));
+    NonnullRefPtr<DictObject> pattern_dict = [&] {
+        // Shading patterns do not have a content stream.
+        if (pattern->is<DictObject>())
+            return pattern->cast<DictObject>();
+        return pattern->cast<StreamObject>()->dict();
+    }();
+
+    // PatternType (Required) A code identifying the type of pattern that this dictionary describes;
+    // shall be 1 for a tiling pattern
+    auto const pattern_type = pattern_dict->get(CommonNames::PatternType)->get_u16();
+    if (pattern_type != 1)
+        return Error::rendering_unsupported_error("Unsupported pattern type {}", pattern_type);
+
+    // Type (Optional) The type of PDF object that this dictionary describes;
+    // if present, shall be Pattern for a pattern dictionary
+    auto const type = pattern_dict->get(CommonNames::Type);
+    if (type.has_value()) {
+        auto type_name = type->get<NonnullRefPtr<Object>>()->cast<NameObject>();
+        if (type_name->name() != CommonNames::Pattern)
+            return Error::rendering_unsupported_error("Unsupported pattern type {}", type_name->name());
+    }
+
+    // PaintType (Required) A code that determines how the colour of the pattern cell shall be specified
+    auto const pattern_paint_type = pattern_dict->get("PaintType")->get_u16();
+    if (pattern_paint_type != 1)
+        return Error::rendering_unsupported_error("Unsupported pattern paint type {}", pattern_paint_type);
+
+    // Matrix (Optional) An array of six numbers specifying the pattern matrix
+    Vector<Value> pattern_matrix;
+    if (pattern_dict->contains(CommonNames::Matrix)) {
+        pattern_matrix = pattern_dict->get_array(m_renderer.m_document, CommonNames::Matrix).value()->elements();
+    } else {
+        pattern_matrix = Vector { Value { 1 }, Value { 0 }, Value { 0 }, Value { 1 }, Value { 0 }, Value { 0 } };
+    }
+
+    auto pattern_bounding_box = pattern_dict->get_array(m_renderer.m_document, "BBox").value()->elements();
+    auto pattern_transform = Gfx::AffineTransform(
+        pattern_matrix[0].to_float(),
+        pattern_matrix[1].to_float(),
+        pattern_matrix[2].to_float(),
+        pattern_matrix[3].to_float(),
+        pattern_matrix[4].to_float(),
+        pattern_matrix[5].to_float());
+
+    // To get the device space size for the bitmap, apply the pattern transform to the pattern space bounding box, and then apply the initial ctm.
+    // NB: the pattern pattern_matrix maps pattern space to the default (initial) coordinate space of the page. (i.e cannot be updated via cm).
+
+    auto initial_ctm = Gfx::AffineTransform(m_renderer.m_graphics_state_stack.first().ctm);
+    initial_ctm.set_translation(0, 0);
+    initial_ctm.set_scale(initial_ctm.x_scale(), initial_ctm.y_scale());
+
+    auto pattern_space_lower_left = Gfx::FloatPoint { pattern_bounding_box[0].to_int(), pattern_bounding_box[1].to_int() };
+    auto pattern_space_upper_right = Gfx::FloatPoint { pattern_bounding_box[2].to_int(), pattern_bounding_box[3].to_int() };
+
+    auto device_space_lower_left = initial_ctm.map(pattern_transform.map(pattern_space_lower_left));
+    auto device_space_upper_right = initial_ctm.map(pattern_transform.map(pattern_space_upper_right));
+
+    auto bitmap_width = (int)device_space_upper_right.x() - (int)device_space_lower_left.x();
+    auto bitmap_height = (int)device_space_upper_right.y() - (int)device_space_lower_left.y();
+
+    auto pattern_cell = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::BGRA8888, { bitmap_width, bitmap_height }));
+    auto page = Page(m_renderer.m_page);
+    page.media_box = Rectangle {
+        pattern_space_lower_left.x(), pattern_space_lower_left.y(),
+        pattern_space_upper_right.x(), pattern_space_upper_right.y()
+    };
+    page.crop_box = page.media_box;
+
+    // (Required) A resource dictionary containing all of the named resources required by the pattern’s content stream.
+    // FIXME: This is technically required, but `patterns.pdf` omits it (and it is accepted by Chrome and FF/LibPDF.js).
+    Optional<NonnullRefPtr<DictObject>> pattern_resources {};
+    if (pattern_dict->contains(CommonNames::Resources))
+        pattern_resources = TRY(pattern_dict->get_dict(m_renderer.m_document, CommonNames::Resources));
+
+    auto pattern_renderer = Renderer(m_renderer.m_document, page, pattern_cell, {}, m_renderer.m_rendering_preferences);
+    auto operators = TRY(Parser::parse_operators(m_renderer.m_document, pattern->cast<StreamObject>()->bytes()));
+    for (auto& op : operators)
+        TRY(pattern_renderer.handle_operator(op, pattern_resources));
+
+    auto x_steps = pattern_dict->get("XStep").value_or(bitmap_width).to_int();
+    auto y_steps = pattern_dict->get("YStep").value_or(bitmap_height).to_int();
+
+    auto device_space_steps = initial_ctm.map(pattern_transform.map(Gfx::IntPoint { x_steps, y_steps }));
+
+    NonnullRefPtr<Gfx::PaintStyle> style = MUST(Gfx::RepeatingBitmapPaintStyle::create(
+        *pattern_cell,
+        device_space_steps,
+        {}));
+
+    return style;
+}
+int PatternColorSpace::number_of_components() const
+{
+    // Not permitted
+    VERIFY_NOT_REACHED();
+}
+Vector<float> PatternColorSpace::default_decode() const
+{
+    // Not permitted
+    VERIFY_NOT_REACHED();
 }
 }

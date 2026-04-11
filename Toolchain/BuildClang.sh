@@ -5,7 +5,6 @@ set -eo pipefail
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# shellcheck source=/dev/null
 . "${DIR}/../Meta/shell_include.sh"
 
 exit_if_running_as_root "Do not run BuildClang.sh as root, parts of your Toolchain directory will become root-owned"
@@ -64,8 +63,8 @@ echo PREFIX is "$PREFIX"
 
 mkdir -p "$DIR/Tarballs"
 
-LLVM_VERSION="20.1.0"
-LLVM_MD5SUM="6d38445b43b3d347daee0423e23bbeec"
+LLVM_VERSION="22.1.0"
+LLVM_MD5SUM="eebd30f81349347d789f04b5ddd41112"
 LLVM_NAME="llvm-project-$LLVM_VERSION.src"
 LLVM_PKG="$LLVM_NAME.tar.xz"
 LLVM_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$LLVM_PKG"
@@ -222,12 +221,12 @@ pushd "$DIR/Build/clang"
     pushd llvm
         buildstep "llvm/configure" cmake "$DIR/Tarballs/$LLVM_NAME/llvm" \
             -G Ninja \
-            -DSERENITY_x86_64-pc-serenity_SYSROOT="$BUILD/x86_64clang/Root" \
-            -DSERENITY_aarch64-pc-serenity_SYSROOT="$BUILD/aarch64clang/Root" \
-            -DSERENITY_riscv64-pc-serenity_SYSROOT="$BUILD/riscv64clang/Root" \
-            -DSERENITY_x86_64-pc-serenity_STUBS="$DIR/Stubs/x86_64" \
-            -DSERENITY_aarch64-pc-serenity_STUBS="$DIR/Stubs/aarch64" \
-            -DSERENITY_riscv64-pc-serenity_STUBS="$DIR/Stubs/riscv64" \
+            -DSERENITY_x86_64-serenity_SYSROOT="$BUILD/x86_64clang/Root" \
+            -DSERENITY_aarch64-serenity_SYSROOT="$BUILD/aarch64clang/Root" \
+            -DSERENITY_riscv64-serenity_SYSROOT="$BUILD/riscv64clang/Root" \
+            -DSERENITY_x86_64-serenity_STUBS="$DIR/Stubs/x86_64" \
+            -DSERENITY_aarch64-serenity_STUBS="$DIR/Stubs/aarch64" \
+            -DSERENITY_riscv64-serenity_STUBS="$DIR/Stubs/riscv64" \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -C "$DIR/CMake/LLVMConfig.cmake" \
             ${link_lld:+"-DLLVM_ENABLE_LLD=ON"} \
@@ -244,9 +243,9 @@ pushd "$DIR/Local/clang/bin/"
     ln -s ../../mold/bin/mold ld.mold
 
     for arch in $ARCHS; do
-        ln -s clang "$arch"-pc-serenity-clang
-        ln -s clang++ "$arch"-pc-serenity-clang++
-        ln -s llvm-nm "$arch"-pc-serenity-nm
-        echo "--sysroot=$BUILD/${arch}clang/Root" > "$arch"-pc-serenity.cfg
+        ln -s clang "$arch"-serenity-clang
+        ln -s clang++ "$arch"-serenity-clang++
+        ln -s llvm-nm "$arch"-serenity-nm
+        echo "--sysroot=$BUILD/${arch}clang/Root" > "$arch"-unknown-serenity.cfg
     done
 popd

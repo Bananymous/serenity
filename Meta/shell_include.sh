@@ -14,7 +14,9 @@ die() {
 if [ "$(uname -s)" = "SerenityOS" ]; then
     SUDO="pls -E"
 elif command -v sudo >/dev/null; then
-    SUDO="sudo -E"
+    # Preserve all environment variables starting with SERENITY.
+    SERENITY_VARS=$(env | cut -d= -f1 | (grep '^SERENITY' || [[ $? -eq 1 ]]) | tr '\n' ',' | sed 's/,$//')
+    SUDO="sudo --preserve-env=$SERENITY_VARS"
 elif command -v doas >/dev/null; then
     if [ "$SUDO_UID" = '' ]; then
         SUDO_UID=$(id -u)
@@ -37,7 +39,7 @@ find_executable() {
   paths=("/usr/sbin" "/sbin")
 
   if [ "$(uname -s)" = "Darwin" ]; then
-    if [ -n "${HOMEBREW_PREFIX}" ]; then
+    if [ -n "${HOMEBREW_PREFIX:-}" ]; then
       paths+=("${HOMEBREW_PREFIX}/opt/e2fsprogs/bin" "${HOMEBREW_PREFIX}/opt/e2fsprogs/sbin")
     elif command -v brew > /dev/null 2>&1; then
       if prefix=$(brew --prefix e2fsprogs 2>/dev/null); then
@@ -83,9 +85,11 @@ get_number_of_processing_units() {
   ($number_of_processing_units)
 }
 
-# Discover how to get apparent size from `du`. GNU/BusyBox du has --apparent-size / -b, BSD/Darwin du has `-A`.
+# Discover how to get apparent size from `du`. GNU/BusyBox du has --apparent-size / -b, uutils has to use --apparent-size due to a -b bug, BSD/Darwin du has `-A`.
 if du --help 2>&1 | grep -qE "GNU coreutils|BusyBox"; then
     DU_APPARENT_SIZE_FLAG="-b"
+elif du -V 2>&1 | grep -qE "uutils"; then
+    DU_APPARENT_SIZE_FLAG="--apparent-size"
 else
     DU_APPARENT_SIZE_FLAG="-A"
 fi
@@ -116,3 +120,14 @@ check_sha256() {
     fi
     test "${EXPECTED_HASH}" = "${SEEN_HASH}"
 }
+
+HOST_ARCH=$(uname -m)
+if [ "$HOST_ARCH" = "x86_64" ] || [ "$HOST_ARCH" = "amd64" ] || [ "$HOST_ARCH" = "x64" ]; then
+    HOST_ARCH="x86_64"
+elif [ "$HOST_ARCH" = "aarch64" ] || [ "$HOST_ARCH" = "arm64" ]; then
+    HOST_ARCH="aarch64"
+elif [ "$HOST_ARCH" = "riscv64" ]; then
+    HOST_ARCH="riscv64"
+else
+    die "Unknown host architecture: $HOST_ARCH"
+fi

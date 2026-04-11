@@ -52,14 +52,7 @@ public:
     };
 
     LatLng center() const { return m_center; }
-    void set_center(LatLng const& center)
-    {
-        m_center = {
-            min(max(center.latitude, -LATITUDE_MAX), LATITUDE_MAX),
-            min(max(center.longitude, -180.0), 180.0)
-        };
-        update();
-    }
+    void set_center(LatLng const& center);
 
     int zoom() const { return m_zoom; }
     void set_zoom(int zoom);
@@ -138,7 +131,10 @@ protected:
     RefPtr<Protocol::RequestClient> request_client() const { return m_request_client; }
 
 private:
+    // ^Config::Listener
     virtual void config_string_did_change(StringView domain, StringView group, StringView key, StringView value) override;
+    virtual void config_key_was_removed(StringView domain, StringView group, StringView key) override;
+
     virtual void doubleclick_event(GUI::MouseEvent&) override;
     virtual void mousemove_event(GUI::MouseEvent&) override;
     virtual void mousedown_event(GUI::MouseEvent&) override;
@@ -146,6 +142,7 @@ private:
     virtual void mousewheel_event(GUI::MouseEvent&) override;
     virtual void context_menu_event(GUI::ContextMenuEvent& event) override;
     virtual void paint_event(GUI::PaintEvent&) override;
+    virtual void resize_event(GUI::ResizeEvent&) override;
 
     void set_zoom_for_mouse_event(int zoom, GUI::MouseEvent&);
 
@@ -193,6 +190,7 @@ private:
     int m_last_mouse_x { 0 };
     int m_last_mouse_y { 0 };
     bool m_first_image_loaded { false };
+    bool m_tile_provider_invalid { false };
     bool m_connection_failed { false };
     OrderedHashMap<TileKey, RefPtr<Gfx::Bitmap>> m_tiles;
     Vector<Marker> m_markers;

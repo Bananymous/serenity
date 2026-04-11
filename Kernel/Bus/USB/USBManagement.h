@@ -17,21 +17,17 @@ class USBManagement {
 
 public:
     USBManagement();
-    static bool initialized();
-    static void initialize();
     static USBManagement& the();
 
-    static void register_driver(NonnullLockRefPtr<Driver> driver);
+    static ErrorOr<void> register_driver(NonnullLockRefPtr<Driver> driver);
     static LockRefPtr<Driver> get_driver_by_name(StringView name);
     static void unregister_driver(NonnullLockRefPtr<Driver> driver);
 
-    static void add_recipe(DeviceTree::DeviceRecipe<NonnullLockRefPtr<USBController>>);
+    void add_controller(NonnullLockRefPtr<USBController>);
 
     static Vector<NonnullLockRefPtr<Driver>>& available_drivers();
 
 private:
-    void enumerate_controllers();
-
     USBController::List m_controllers;
 };
 

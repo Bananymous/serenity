@@ -21,18 +21,12 @@ SpinlockProtected<LoopDevice::List, LockRank::None>& LoopDevice::all_instances()
     return s_all_instances;
 }
 
-void LoopDevice::remove(Badge<DeviceControlDevice>)
-{
-    LoopDevice::all_instances().with([&](auto&) {
-        m_list_node.remove();
-    });
-}
-
 bool LoopDevice::unref() const
 {
     bool did_hit_zero = LoopDevice::all_instances().with([&](auto&) {
         if (deref_base())
             return false;
+        m_list_node.remove();
         const_cast<LoopDevice&>(*this).revoke_weak_ptrs();
         return true;
     });
@@ -65,11 +59,13 @@ ErrorOr<NonnullRefPtr<LoopDevice>> LoopDevice::create_with_file_description(Open
     if (!custody->inode().fs().supports_backing_loop_devices())
         return Error::from_errno(ENOTSUP);
 
-    return TRY(LoopDevice::all_instances().with([custody](auto& all_instances_list) -> ErrorOr<NonnullRefPtr<LoopDevice>> {
-        NonnullRefPtr<LoopDevice> device = TRY(Device::try_create_device<LoopDevice>(*custody, s_loop_device_id.fetch_add(1)));
+    NonnullRefPtr<LoopDevice> device = TRY(Device::try_create_device<LoopDevice>(*custody, s_loop_device_id.fetch_add(1)));
+
+    LoopDevice::all_instances().with([custody, device](auto& all_instances_list) {
         all_instances_list.append(*device);
-        return device;
-    }));
+    });
+
+    return device;
 }
 
 void LoopDevice::start_request(AsyncBlockDeviceRequest& request)

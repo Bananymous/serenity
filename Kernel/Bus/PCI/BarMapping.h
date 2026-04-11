@@ -13,13 +13,13 @@
 
 namespace Kernel::PCI {
 
-inline ErrorOr<PhysicalAddress> get_bar_address(DeviceIdentifier const& device, HeaderType0BaseRegister bar)
+inline ErrorOr<u64> get_bar_bus_address(DeviceIdentifier const& device, HeaderType0BaseRegister bar)
 {
     u64 pci_bar_value = get_BAR(device, bar);
     auto pci_bar_space_type = get_BAR_space_type(pci_bar_value);
 
     if (pci_bar_space_type == BARSpaceType::IOSpace)
-        return EIO;
+        return pci_bar_value & bar_io_address_mask;
 
     if (pci_bar_space_type == BARSpaceType::Memory64BitSpace) {
         // FIXME: In theory, BAR5 cannot be assigned to 64 bit as it is the last one...
@@ -31,10 +31,18 @@ inline ErrorOr<PhysicalAddress> get_bar_address(DeviceIdentifier const& device, 
         u64 next_pci_bar_value = get_BAR(device, static_cast<PCI::HeaderType0BaseRegister>(to_underlying(bar) + 1));
         pci_bar_value |= next_pci_bar_value << 32;
 
-        return PhysicalAddress { pci_bar_value & bar_address_mask };
+        return pci_bar_value & bar_address_mask;
     }
 
-    return PhysicalAddress { pci_bar_value & bar_address_mask };
+    return pci_bar_value & bar_address_mask;
+}
+
+inline ErrorOr<PhysicalAddress> get_bar_address(DeviceIdentifier const& device, HeaderType0BaseRegister bar)
+{
+    u64 bus_address = TRY(get_bar_bus_address(device, bar));
+    auto bar_space_type = get_BAR_space_type(get_BAR(device, bar));
+    auto host_address = TRY(translate_bus_address_to_host_address(device, bar_space_type, bus_address));
+    return host_address;
 }
 
 template<typename T>
@@ -42,9 +50,6 @@ inline ErrorOr<Memory::TypedMapping<T>> map_bar(DeviceIdentifier const& device, 
 {
     u64 pci_bar_value = get_BAR(device, bar);
     auto pci_bar_space_type = get_BAR_space_type(pci_bar_value);
-
-    if (pci_bar_space_type == PCI::BARSpaceType::IOSpace)
-        return EIO;
 
     auto bar_address = TRY(get_bar_address(device, bar));
 

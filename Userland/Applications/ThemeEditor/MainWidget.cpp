@@ -87,6 +87,11 @@ static PropertyTab const window_tab {
             { { Gfx::ColorRole::Window },
                 { Gfx::ColorRole::WindowText } } },
 
+        { "Overlays",
+            { { Gfx::ColorRole::OverlayBackground },
+                { Gfx::ColorRole::OverlayText },
+                { Gfx::PathRole::OverlayRectShadow } } },
+
         { "Desktop",
             { { Gfx::ColorRole::DesktopBackground },
                 { Gfx::PathRole::TaskbarShadow } } },
@@ -454,6 +459,7 @@ ErrorOr<Core::AnonymousBuffer> MainWidget::encode()
     ENCODE_PATH(TaskbarShadow, true);
     ENCODE_PATH(MenuShadow, true);
     ENCODE_PATH(TooltipShadow, true);
+    ENCODE_PATH(OverlayRectShadow, true);
 
     return buffer;
 }
@@ -718,6 +724,12 @@ ErrorOr<void> MainWidget::load_from_file(ByteString const& filename, NonnullOwnP
         path_input->set_text(m_current_palette.path(Gfx::PathRole::role), GUI::AllowCallback::No);
     ENUMERATE_PATH_ROLES(__ENUMERATE_PATH_ROLE)
 #undef __ENUMERATE_PATH_ROLE
+
+#define __ENUMERATE_WINDOW_THEME_ROLE(role)                                                         \
+    if (auto window_theme_input = m_window_theme_inputs[to_underlying(Gfx::WindowThemeRole::role)]) \
+        window_theme_input->set_selected_index(m_window_theme_model->index_of(m_current_palette.window_theme_provider(Gfx::WindowThemeRole::role)), GUI::AllowCallback::No);
+    ENUMERATE_WINDOW_THEME_ROLES(__ENUMERATE_WINDOW_THEME_ROLE)
+#undef __ENUMERATE_WINDOW_THEME_ROLE
 
     m_last_modified_time = MonotonicTime::now();
     window()->set_modified(false);

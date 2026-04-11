@@ -6,6 +6,7 @@
 
 #include <AK/Singleton.h>
 #include <Kernel/Arch/aarch64/RPi/SDHostController.h>
+#include <Kernel/Arch/aarch64/RPi/Timer.h>
 #include <Kernel/Devices/Storage/StorageManagement.h>
 #include <Kernel/Firmware/DeviceTree/DeviceTree.h>
 #include <Kernel/Firmware/DeviceTree/Driver.h>
@@ -18,7 +19,13 @@ SDHostController::SDHostController(Memory::TypedMapping<SD::HostControlRegisterM
 {
 }
 
+ErrorOr<u32> SDHostController::retrieve_sd_clock_frequency()
+{
+    return Timer::get_clock_rate(Timer::ClockID::EMMC);
+}
+
 static constinit Array const compatibles_array = {
+    "brcm,bcm2712-sdhci"sv,
     "brcm,bcm2835-sdhci"sv,
 };
 

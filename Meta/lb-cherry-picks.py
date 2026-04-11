@@ -305,6 +305,19 @@ serenity_cherry_picks.add('b118c99c271e34e2c5020022d062a4371f199a71')
 # cherry-pick of serenity's https://github.com/SerenityOS/serenity/pull/24533
 serenity_cherry_picks.add('50dc1c3c19b82af797c79b5aa694b3ac7f0114bb')
 
+# Qt networking support was removed both by ladybird in the first commit of
+# https://github.com/LadybirdBrowser/ladybird/pull/1671 and by serenity's
+# PR https://github.com/SerenityOS/serenity/pull/26114
+serenity_cherry_picks.add('1b324f3ae11d4f5750d89183f97bb3b3b2b4f801')
+
+# WebContent and WebWorker stopped linking to Qt in the last commit of
+# https://github.com/LadybirdBrowser/ladybird/pull/5331 and in serenity's
+# PR https://github.com/SerenityOS/serenity/pull/26114
+serenity_cherry_picks.add('62c5f4b822d62d6be8905dafc84341370491cd1e')
+
+# Manually cherry-picked in https://github.com/SerenityOS/serenity/pull/26349
+serenity_cherry_picks.add('e8b7c88881c099ffdd23265719588f97c766ba0c')
+
 # Define a list of pull request IDs that should never be merged
 # and the reasons why they shouldn't be merged.
 # We fairly likely don't want the PRs in here (but it isn't 100% set
@@ -347,15 +360,23 @@ never_merge_prs = {
     "https://github.com/LadybirdBrowser/ladybird/pull/87": "Serenity does not use vcpkg",
     "https://github.com/LadybirdBrowser/ladybird/pull/89": "Serenity does not use vcpkg",
     "https://github.com/LadybirdBrowser/ladybird/pull/92": "Ladybird-specific",
+    "https://github.com/LadybirdBrowser/ladybird/pull/101": "NIH violation: fontconfig",
     "https://github.com/LadybirdBrowser/ladybird/pull/103": "Ladybird-specific (see serenity PR24679)",
     "https://github.com/LadybirdBrowser/ladybird/pull/109": "Still used in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/110": "NIH violation: icu",
     "https://github.com/LadybirdBrowser/ladybird/pull/115": "Still used in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/117": "Ladybird-specific",
+    "https://github.com/LadybirdBrowser/ladybird/pull/124": "NIH violation: icu",
     "https://github.com/LadybirdBrowser/ladybird/pull/125": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/126": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/145": "NIH violation: icu",
+    "https://github.com/LadybirdBrowser/ladybird/pull/164": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/170": "NIH violation: icu",
+    "https://github.com/LadybirdBrowser/ladybird/pull/176": "NIH violation: icu",
+
+    # Independently fixed in f7227550.
+    "https://github.com/LadybirdBrowser/ladybird/pull/177": "Ladybird-specific",
+
     "https://github.com/LadybirdBrowser/ladybird/pull/183": "NIH violation: libjpeg-turbo",
     "https://github.com/LadybirdBrowser/ladybird/pull/184": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/190": "Serenity does not use vcpkg",
@@ -363,19 +384,29 @@ never_merge_prs = {
     "https://github.com/LadybirdBrowser/ladybird/pull/195": "Still used in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/197": "Still used in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/201": "NIH violation: icu",
+    "https://github.com/LadybirdBrowser/ladybird/pull/202": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/204": "NIH violation: skia",
+
+    # Independently changed in d380b53a.
+    "https://github.com/LadybirdBrowser/ladybird/pull/210": "Ladybird-specific",
+
     "https://github.com/LadybirdBrowser/ladybird/pull/212": "Still used in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/214": "NIH violation: skia",
     "https://github.com/LadybirdBrowser/ladybird/pull/219": "NIH violation: icu",
     "https://github.com/LadybirdBrowser/ladybird/pull/223": "NIH violation: libpng+apng",
+    "https://github.com/LadybirdBrowser/ladybird/pull/232": "NIH violation: skia",
+    "https://github.com/LadybirdBrowser/ladybird/pull/235": "Still used in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/236": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/239": "NIH violation: icu",
     "https://github.com/LadybirdBrowser/ladybird/pull/249": "NIH violation: icu / vcpkg",
     "https://github.com/LadybirdBrowser/ladybird/pull/259": "Still used in Serenity",
+    "https://github.com/LadybirdBrowser/ladybird/pull/264": "Still used in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/270": "NIH violation",
     "https://github.com/LadybirdBrowser/ladybird/pull/285": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/307": "NIH violation: skia",
+    "https://github.com/LadybirdBrowser/ladybird/pull/309": "Still used in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/313": "Ladybird-specific",
+    "https://github.com/LadybirdBrowser/ladybird/pull/314": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/315": "Ladybird-specific",
 
     # wolfssl was merged upstream and quickly reverted again:
@@ -396,17 +427,24 @@ never_merge_prs = {
     "https://github.com/LadybirdBrowser/ladybird/pull/416": "Big-endian patch",
     "https://github.com/LadybirdBrowser/ladybird/pull/426": "Still used in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/427": "Still used in Serenity",
+    "https://github.com/LadybirdBrowser/ladybird/pull/428": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/446": "vcpkg (vulkan)",
     "https://github.com/LadybirdBrowser/ladybird/pull/454": "No Ladybird/Android in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/455": "NIH violation: libavif",
+    "https://github.com/LadybirdBrowser/ladybird/pull/456": "Ladybird-specific",
+    "https://github.com/LadybirdBrowser/ladybird/pull/461": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/463": "Ladybird-specific",
+    "https://github.com/LadybirdBrowser/ladybird/pull/467": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/478": "No Ladybird/Android in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/481": "No Ladybird/Android in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/487": "Still used in Serenity",
+    "https://github.com/LadybirdBrowser/ladybird/pull/510": "NIH violation: skia",
     "https://github.com/LadybirdBrowser/ladybird/pull/519": "Dependabot",
     "https://github.com/LadybirdBrowser/ladybird/pull/525": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/526": "Ladybird-specific",
+    "https://github.com/LadybirdBrowser/ladybird/pull/542": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/551": "NIH violation: skia",
+    "https://github.com/LadybirdBrowser/ladybird/pull/568": "Made obsolete by PR732",
     "https://github.com/LadybirdBrowser/ladybird/pull/574": "NIH violation: skia",
     "https://github.com/LadybirdBrowser/ladybird/pull/577": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/578": "Ladybird-specific",
@@ -423,32 +461,56 @@ never_merge_prs = {
     "https://github.com/LadybirdBrowser/ladybird/pull/641": "NIH violation: skia",
     "https://github.com/LadybirdBrowser/ladybird/pull/642": "NIH violation: skia",
     "https://github.com/LadybirdBrowser/ladybird/pull/644": "NIH violation: skia",
+    "https://github.com/LadybirdBrowser/ladybird/pull/650": "Qt networking-related",
     "https://github.com/LadybirdBrowser/ladybird/pull/668": "NIH violation: skia",
+    "https://github.com/LadybirdBrowser/ladybird/pull/670": "NIH violation: skia",
     "https://github.com/LadybirdBrowser/ladybird/pull/674": "NIH violation: simdutf",
     "https://github.com/LadybirdBrowser/ladybird/pull/678": "NIH violation: skia",
+    "https://github.com/LadybirdBrowser/ladybird/pull/680": "NIH violation: skia",
+    "https://github.com/LadybirdBrowser/ladybird/pull/686": "NIH violation: skia",
     "https://github.com/LadybirdBrowser/ladybird/pull/689": "Ladybird-specific",
+    "https://github.com/LadybirdBrowser/ladybird/pull/694": "NIH violation: skia",
     "https://github.com/LadybirdBrowser/ladybird/pull/715": "NIH violation: skia",
+    "https://github.com/LadybirdBrowser/ladybird/pull/716": "Ladybird-specific (notes-push)",
+    "https://github.com/LadybirdBrowser/ladybird/pull/722": "Ladybird-specific (notes-push)",
+    "https://github.com/LadybirdBrowser/ladybird/pull/723": "Ladybird-specific (notes-push)",
     "https://github.com/LadybirdBrowser/ladybird/pull/726": "swift",
+    "https://github.com/LadybirdBrowser/ladybird/pull/728": "Ladybird-specific (notes-push)",
+    "https://github.com/LadybirdBrowser/ladybird/pull/736": "NIH violation: skia",
     "https://github.com/LadybirdBrowser/ladybird/pull/737": "Ladybird-specific",
+    "https://github.com/LadybirdBrowser/ladybird/pull/742": "Ladybird-specific (notes-push)",
     "https://github.com/LadybirdBrowser/ladybird/pull/745": "Ladybird-specific",
+    "https://github.com/LadybirdBrowser/ladybird/pull/747": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/753": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/754": "Still used in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/756": "NIH violation: libjxl",
+
+    "https://github.com/LadybirdBrowser/ladybird/pull/785": "Ladybird-specific (notes-push)",
 
     "https://github.com/LadybirdBrowser/ladybird/pull/787": "Got reverted",
     "https://github.com/LadybirdBrowser/ladybird/pull/810": "Reverted PR787",
 
     "https://github.com/LadybirdBrowser/ladybird/pull/805": "Ladybird-specific",
 
+    # We still rely on DisplayListPlayerCPU.
+    "https://github.com/LadybirdBrowser/ladybird/pull/807": "Still used in Serenity",
+    "https://github.com/LadybirdBrowser/ladybird/pull/808": "Still used in Serenity",
+
     # Maybe want the first commit here?
     "https://github.com/LadybirdBrowser/ladybird/pull/821": "swift",
 
+    "https://github.com/LadybirdBrowser/ladybird/pull/830": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/833": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/845": "NIH violation: skia",
+    "https://github.com/LadybirdBrowser/ladybird/pull/853": "Ladybird-specific(ish)",
     "https://github.com/LadybirdBrowser/ladybird/pull/855": "Ladybird-specific(ish)",
     "https://github.com/LadybirdBrowser/ladybird/pull/860": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/866": "Still used in Serenity",
+    "https://github.com/LadybirdBrowser/ladybird/pull/884": "Still used in Serenity",
+    "https://github.com/LadybirdBrowser/ladybird/pull/885": "Still used in Serenity",
+    "https://github.com/LadybirdBrowser/ladybird/pull/889": "Still used in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/900": "Ladybird-specific",
+    "https://github.com/LadybirdBrowser/ladybird/pull/926": "NIH violation: skia",
     "https://github.com/LadybirdBrowser/ladybird/pull/979": "No Ladybird/Android in Serenity",
     "https://github.com/LadybirdBrowser/ladybird/pull/997": "swift",
     "https://github.com/LadybirdBrowser/ladybird/pull/1006": "No Ladybird/Android in Serenity",
@@ -457,13 +519,20 @@ never_merge_prs = {
     "https://github.com/LadybirdBrowser/ladybird/pull/1110": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/1120": "NIH violation: libpng+apng",
     "https://github.com/LadybirdBrowser/ladybird/pull/1130": "swift",
+    "https://github.com/LadybirdBrowser/ladybird/pull/1136": "Obsolete (Xcode update)",
     "https://github.com/LadybirdBrowser/ladybird/pull/1138": "NIH violation: skia",
+    "https://github.com/LadybirdBrowser/ladybird/pull/1147": "Ladybird-specific",
+    "https://github.com/LadybirdBrowser/ladybird/pull/1152": "Obsolete (Xcode update)",
     "https://github.com/LadybirdBrowser/ladybird/pull/1175": "swift",
+    "https://github.com/LadybirdBrowser/ladybird/pull/1189": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/1195": "Reverted 6c9adf3dbc64 in never_merge_commits",
     "https://github.com/LadybirdBrowser/ladybird/pull/1200": "swift",
     "https://github.com/LadybirdBrowser/ladybird/pull/1202": "swift",
+    "https://github.com/LadybirdBrowser/ladybird/pull/1208": "NIH violation: skia",
+    "https://github.com/LadybirdBrowser/ladybird/pull/1212": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/1220": "swift",
     "https://github.com/LadybirdBrowser/ladybird/pull/1221": "swift",
+    "https://github.com/LadybirdBrowser/ladybird/pull/1230": "Ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/1263": "Dependabot",
     "https://github.com/LadybirdBrowser/ladybird/pull/1328": "NIH violation: skia",
 
@@ -498,6 +567,7 @@ never_merge_prs = {
     "https://github.com/LadybirdBrowser/ladybird/pull/2182": "ladybird-specific",
     "https://github.com/LadybirdBrowser/ladybird/pull/2512": "NIH violation: skia",
     "https://github.com/LadybirdBrowser/ladybird/pull/2527": "Still used in Serenity",
+    "https://github.com/LadybirdBrowser/ladybird/pull/7487": "Incorrect for AK_OS_SERENITY",
 }
 
 # Quick consistency check:
@@ -596,6 +666,31 @@ never_merge_commits = {
     # Omit skia-related commits from https://github.com/LadybirdBrowser/ladybird/pull/1963
     "6c642d168d54ced889546a88ffc0662f6d8564d2": "NIH violation: skia",
     "8fd59899fc667aa3dd6c2de7b8248ee129563e53": "NIH violation: skia",
+
+    "fe551d3eff06adddc7d2aa60c3f62d67bebb7a4f": "Ladybird-specific (PR494, commit 1)",
+
+    # The existing BUILD_LAGOM option makes more sense in the context of
+    # serenity than the new LAGOM_TOOLS_ONLY option (second commit of PR105).
+    "9f25dc6b09ce76d1ab2a92d454c1387600515612": "Ladybird-specific",
+
+    # We don't want anything except the AO spec number update from PR281.
+    "8331a87f6c2d0bd7ab2f6e8fdf294cf8012c6986": "Ladybird-specific",
+    "c379b357981f40908d870edccee54ec8ab9798e0": "ICU",
+    "d3e809bcd4a661b9d2e7a41ec2f328bf6485cc11": "ICU",
+    "4fc0fba646caae0bffca37a171cff2f74477d176": "ICU",
+    "1b2d47e6bbda997e2cf4a9e2685cd1c409cd8c2f": "ICU",
+    "672a555f981a81944bba8433d08fb627631139db": "ICU",
+    "bd73dd316de56897bb4ba50d1ae619f82ce31aeb": "Still used in Serenity",
+
+    "79acb998e1493ef479a140a01e415251fe3d736a": "NIH violation: skia (PR294, commit 3)",
+    "f4d40c292bd8dd6ee9ac35c8b170965af962fdc5": "Still used in Serenity (PR303, commit 1)",
+    "22d7aa53fa52bdf71eef667eb58d142b10d4ba74": "Ladybird-specific (PR492, commit 1)",
+    "28b95e8ed0e4eed87a8e4ffb60e2e28ec3b78056": "Patch to removed Qt-networking (PR549, commit 1)",
+    "bfc9dc447f42eb9d7d0927721291d1b528b3125d": "NIH violation: simdutf (PR654, commit 2)",
+    "4e9d6a543a96a06c4974f2dab5d23f3e68da7a77": "Still used in Serenity (PR1297, commit 5)",
+    "a94bf9bd09c217b69968b7ac20d5ed8c54ee08d9": "Flaky test",
+
+    "61da1236e7728a50a8b335f55d52e74d86444743": "NIH violation: skia (PR826, commit 4)",
 
     # Commits from the first 14 PRs didn't get Pull-request: footers:
     "6d3a54e4a8d149171105d1e6378cbd2e2d1bb7fc": "Ladybird-specific (PR2)",

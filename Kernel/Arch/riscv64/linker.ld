@@ -1,10 +1,12 @@
 /*
- * Copyright (c) 2023, Sönke Holz <sholz830@gmail.com>
+ * Copyright (c) 2023, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
 ENTRY(init)
+
+ASSERT(CONSTANT(MAXPAGESIZE) == 4K, "The riscv64 Kernel linker script assumes a max page size of 4K");
 
 #define PF_X 0x1
 #define PF_W 0x2
@@ -57,10 +59,6 @@ SECTIONS
 
     .rodata ALIGN(4K) :
     {
-        start_heap_ctors = .;
-        *libkernel_heap.a:*(.init_array)
-        end_heap_ctors = .;
-
         start_ctors = .;
         *(.init_array)
         end_ctors = .;

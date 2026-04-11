@@ -12,6 +12,7 @@
 #include <AK/Utf8View.h>
 #include <AK/Vector.h>
 #include <LibGfx/Color.h>
+#include <LibGfx/EdgeFlagPathRasterizer.h>
 #include <LibGfx/Font/FontDatabase.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Gradients.h>
@@ -113,6 +114,7 @@ public:
     void draw_glyph_or_emoji(IntPoint, Utf8CodePointIterator&, Font const&, Color);
     void draw_glyph(FloatPoint, u32, Color);
     void draw_glyph(FloatPoint, u32, Font const&, Color);
+    void draw_glyph_with_postscript_name(FloatPoint point, StringView name, Font const& font, Color color);
     void draw_glyph_or_emoji(FloatPoint, u32, Font const&, Color);
     void draw_glyph_or_emoji(FloatPoint, Utf8CodePointIterator&, Font const&, Color);
     void draw_circle_arc_intersecting(IntRect const&, IntPoint, int radius, Color, int thickness);
@@ -140,8 +142,19 @@ public:
 
     void stroke_path(Path const&, Color, int thickness);
 
-    void fill_path(Path const&, Color, WindingRule rule = WindingRule::Nonzero);
-    void fill_path(Path const&, PaintStyle const& paint_style, float opacity = 1.0f, WindingRule rule = WindingRule::Nonzero);
+    template<typename SampleMode = SampleAA>
+    void fill_path(Path const& path, Color color, WindingRule winding_rule = WindingRule::Nonzero)
+    {
+        EdgeFlagPathRasterizer<SampleMode> rasterizer(path_bounds(path));
+        rasterizer.fill(*this, path, color, winding_rule);
+    }
+
+    template<typename SampleMode = SampleAA>
+    void fill_path(Path const& path, PaintStyle const& paint_style, float opacity = 1.0f, WindingRule winding_rule = WindingRule::Nonzero)
+    {
+        EdgeFlagPathRasterizer<SampleMode> rasterizer(path_bounds(path));
+        rasterizer.fill(*this, path, paint_style, opacity, winding_rule);
+    }
 
     Font const& font() const
     {
@@ -183,7 +196,7 @@ public:
 protected:
     friend GradientLine;
     friend AntiAliasingPainter;
-    template<unsigned SamplesPerPixel>
+    template<typename SubpixelSample>
     friend class EdgeFlagPathRasterizer;
 
     IntRect to_physical(IntRect const& r) const { return r.translated(translation()) * scale(); }
@@ -213,6 +226,7 @@ protected:
     Vector<State, 4> m_state_stack;
 
 private:
+    void draw_glyph_internal(FloatPoint point, GlyphRasterPosition const&, FloatPoint top_left, Glyph const& glyph, Color color);
     Vector<DirectionalRun> split_text_into_directional_runs(Utf8View const&, TextDirection initial_direction);
     bool text_contains_bidirectional_text(Utf8View const&, TextDirection);
     template<typename DrawGlyphFunction>

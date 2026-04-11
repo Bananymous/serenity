@@ -9,12 +9,16 @@
 #include <Kernel/Arch/PageFault.h>
 #include <Kernel/Arch/TrapFrame.h>
 #include <Kernel/Arch/aarch64/InterruptManagement.h>
+#include <Kernel/Arch/aarch64/Registers.h>
 #include <Kernel/Interrupts/GenericInterruptHandler.h>
 #include <Kernel/Interrupts/SharedIRQHandler.h>
 #include <Kernel/Interrupts/UnhandledInterruptHandler.h>
 #include <Kernel/KSyms.h>
 #include <Kernel/Library/Panic.h>
 #include <Kernel/Library/StdLib.h>
+#include <Kernel/Tasks/Process.h>
+#include <Kernel/Tasks/Thread.h>
+#include <Kernel/Tasks/ThreadTracer.h>
 
 namespace Kernel {
 
@@ -22,7 +26,7 @@ extern "C" void syscall_handler(TrapFrame const*);
 
 static void dump_exception_syndrome_register(Aarch64::ESR_EL1 const& esr_el1)
 {
-    dbgln("Exception Syndrome: EC({:#b}) IL({:#b}) ISS({:#b}) ISS2({:#b})", esr_el1.EC, esr_el1.IL, esr_el1.ISS, esr_el1.ISS2);
+    dbgln("Exception Syndrome: EC({:#b}) IL({:#b}) ISS({:#b}) ISS2({:#b}) / {:#x}", esr_el1.EC, esr_el1.IL, esr_el1.ISS, esr_el1.ISS2, bit_cast<u64>(esr_el1));
     dbgln("    Class: {}", Aarch64::exception_class_to_string(esr_el1.EC));
 
     if (Aarch64::exception_class_is_data_abort(esr_el1.EC))
@@ -68,6 +72,7 @@ static ErrorOr<PageFault> page_fault_from_exception_syndrome_register(VirtualAdd
     fault.set_access((esr_el1.ISS & (1 << 6)) == (1 << 6) ? PageFault::Access::Write : PageFault::Access::Read);
 
     fault.set_mode(Aarch64::exception_class_is_data_or_instruction_abort_from_lower_exception_level(esr_el1.EC) ? ExecutionMode::User : ExecutionMode::Kernel);
+    fault.set_was_smap_disabled(true); // We don't support SMAP protection on AArch64 yet, so it's always disabled.
 
     if (Aarch64::exception_class_is_instruction_abort(esr_el1.EC))
         fault.set_instruction_fetch(true);
@@ -82,7 +87,17 @@ extern "C" void exception_common(Kernel::TrapFrame* trap_frame)
 
     auto esr_el1 = bit_cast<Aarch64::ESR_EL1>(trap_frame->regs->esr_el1);
     auto fault_address = Aarch64::FAR_EL1::read().virtual_address;
-    Processor::enable_interrupts();
+    if (Aarch64::exception_class_is_breakpoint_instruction(esr_el1.EC)) {
+        // When breakpoint instruction exception is triggered, the pc is set to the address of the
+        // breakpoint instruction, so we need to increase the pc past the breakpoint instruction to
+        // stay consistent with the user‑mode debugger’s behavior.
+        trap_frame->regs->set_ip(trap_frame->regs->ip() + 4);
+    }
+
+    // Only enable interrupts if they were enabled when the exception happened
+    // (spsr_el1.I specifiers an interrupt mask, so it's 0 if interrupts were enabled).
+    if (bit_cast<Aarch64::SPSR_EL1>(trap_frame->regs->spsr_el1).I == 0)
+        Processor::enable_interrupts();
 
     if (Aarch64::exception_class_is_data_abort(esr_el1.EC) || Aarch64::exception_class_is_instruction_abort(esr_el1.EC)) {
         auto page_fault_or_error = page_fault_from_exception_syndrome_register(VirtualAddress(fault_address), esr_el1);
@@ -94,6 +109,29 @@ extern "C" void exception_common(Kernel::TrapFrame* trap_frame)
         }
     } else if (Aarch64::exception_class_is_svc_instruction_execution(esr_el1.EC)) {
         syscall_handler(trap_frame);
+    } else if (Aarch64::exception_class_is_breakpoint_instruction(esr_el1.EC) || Aarch64::exception_class_is_software_step(esr_el1.EC)) {
+        if (trap_frame->regs->previous_mode() == ExecutionMode::User) {
+            auto* current_thread = Thread::current();
+            auto& current_process = current_thread->process();
+
+            if (Aarch64::exception_class_is_software_step(esr_el1.EC)) {
+                // Clear the software step bit in the MDSCR_EL1 register to disable software step.
+                read_debug_registers_into(current_thread->debug_register_state());
+                current_thread->debug_register_state().mdscr_el1 &= ~Aarch64::MDSCR_EL1_SS_FLAG;
+                write_debug_registers_from(current_thread->debug_register_state());
+            }
+
+            if (auto* tracer = current_process.tracer()) {
+                tracer->set_regs(*trap_frame->regs);
+            }
+
+            current_thread->send_urgent_signal_to_self(SIGTRAP);
+        } else {
+            if (Aarch64::exception_class_is_breakpoint_instruction(esr_el1.EC))
+                handle_crash(*trap_frame->regs, "Unexpected breakpoint instruction exception", SIGTRAP, false);
+            if (Aarch64::exception_class_is_software_step(esr_el1.EC))
+                handle_crash(*trap_frame->regs, "Unexpected software step exception", SIGTRAP, false);
+        }
     } else {
         handle_crash(*trap_frame->regs, "Unexpected exception", SIGSEGV, false);
     }

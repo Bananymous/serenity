@@ -9,6 +9,7 @@
 #include <Kernel/Debug.h>
 #include <Kernel/FileSystem/FATFS/Inode.h>
 #include <Kernel/Library/KBufferBuilder.h>
+#include <Kernel/Tasks/Process.h>
 
 namespace Kernel {
 
@@ -19,7 +20,7 @@ ErrorOr<NonnullRefPtr<FATInode>> FATInode::create(FATFS& fs, FATEntry entry, FAT
 }
 
 FATInode::FATInode(FATFS& fs, FATEntry entry, FATEntryLocation inode_metadata_location, NonnullOwnPtr<KString> filename)
-    : Inode(fs, first_cluster(fs.m_fat_version, entry.first_cluster_low, entry.first_cluster_high))
+    : Inode(fs, inode_metadata_location.block.value() * (fs.logical_block_size() / sizeof(FATEntry)) + inode_metadata_location.entry)
     , m_entry(entry)
     , m_inode_metadata_location(inode_metadata_location)
     , m_filename(move(filename))
@@ -34,43 +35,40 @@ ErrorOr<RawPtr<Vector<u32>>> FATInode::get_cluster_list()
     if (m_cluster_list.has_value())
         return &m_cluster_list.value();
 
-    m_cluster_list = TRY(compute_cluster_list(fs(), first_cluster()));
+    m_cluster_list = TRY(compute_cluster_list());
     return &m_cluster_list.value();
 }
 
-ErrorOr<Vector<u32>> FATInode::compute_cluster_list(FATFS& fs, u32 first_cluster)
+ErrorOr<Vector<u32>> FATInode::compute_cluster_list()
 {
     VERIFY(m_inode_lock.is_locked());
 
-    dbgln_if(FAT_DEBUG, "FATInode::compute_cluster_list(): computing block list starting with cluster {}", first_cluster);
-
-    u32 cluster = first_cluster;
+    u32 cluster = first_cluster();
+    dbgln_if(FAT_DEBUG, "FATInode::compute_cluster_list(): computing block list starting with cluster {}", cluster);
 
     Vector<u32> cluster_list;
+    if (cluster <= 1) {
+        // Clusters 0 and 1 are reserved in the FAT, and their entries in the FAT will not
+        // point to another valid cluster in the chain. When we're dealing with the root
+        // directory, we use `cluster == 0` as a signal to read the root directory region
+        // blocks on FAT12/16 file systems. (`fs().first_block_of_cluster` will return the
+        // appropriate block/sectors to read given `cluster == 0`).
+        // When we're not dealing with the root directory, `cluster == 0` signals that the
+        // given entry has no allocated clusters, which is why we return an empty cluster
+        // list in that case.
+        if (this == &fs().root_inode())
+            TRY(cluster_list.try_append(cluster));
 
-    while (cluster < fs.end_of_chain_marker()) {
-        dbgln_if(FAT_DEBUG, "FATInode::compute_cluster_list(): Appending cluster {} to cluster chain starting with {}", cluster, first_cluster);
+        return cluster_list;
+    }
+
+    while (cluster < fs().end_of_chain_marker()) {
+        dbgln_if(FAT_DEBUG, "FATInode::compute_cluster_list(): Appending cluster {} to cluster chain", cluster);
 
         TRY(cluster_list.try_append(cluster));
 
-        // Clusters 0 and 1 are reserved in the FAT, and their entries in the FAT will
-        // not point to another valid cluster in the chain (Cluster 0 typically holds
-        // the "FAT ID" field with some flags, Cluster 1 should be the end of chain
-        // marker).
-        // Internally, we use `cluster == 0` to represent the root directory Inode,
-        // which is a signal to read the root directory region blocks on FAT12/16
-        // file systems. (`fs().first_block_of_cluster` will return the appropriate
-        // block/sectors to read given cluster == 0).
-        // Therefore, we read one set of sectors for these invalid cluster numbers,
-        // and then terminate the loop becuase the FAT entry at `cluster` for these
-        // values does not represent the next step in the chain (because there is
-        // nothing else to read).
-        if (cluster <= 1) {
-            break;
-        }
-
         // Look up the next cluster to read, or read End of Chain marker from table.
-        cluster = TRY(fs.fat_read(cluster));
+        cluster = TRY(fs().fat_read(cluster));
     }
 
     return cluster_list;
@@ -110,7 +108,7 @@ ErrorOr<Vector<ByteBuffer>> FATInode::collect_sfns()
 
 ErrorOr<void> FATInode::create_unique_sfn_for(FATEntry& entry, NonnullRefPtr<SFNUtils::SFN> sfn, Vector<ByteBuffer> existing_sfns)
 {
-    auto is_sfn_unique = [existing_sfns](SFNUtils::SFN const& sfn) -> ErrorOr<bool> {
+    auto is_sfn_unique = [&existing_sfns](SFNUtils::SFN const& sfn) -> ErrorOr<bool> {
         auto serialized_name = TRY(sfn.serialize_name());
         auto serialized_extension = TRY(sfn.serialize_extension());
         for (auto const& current_sfn : existing_sfns) {
@@ -248,6 +246,7 @@ ErrorOr<NonnullOwnPtr<KBuffer>> FATInode::read_block_list()
 
 ErrorOr<RefPtr<FATInode>> FATInode::traverse(Function<ErrorOr<bool>(RefPtr<FATInode>)> callback)
 {
+    VERIFY(m_inode_lock.is_locked());
     VERIFY(has_flag(m_entry.attributes, FATAttributes::Directory));
 
     Vector<FATLongFileNameEntry> lfn_entries;
@@ -352,18 +351,14 @@ StringView FATInode::byte_terminated_string(StringView string, u8 fill_byte)
 
 u32 FATInode::first_cluster() const
 {
-    return first_cluster(fs().m_fat_version, m_entry.first_cluster_low, m_entry.first_cluster_high);
-}
-
-u32 FATInode::first_cluster(FATVersion const version, u16 first_cluster_low, u16 first_cluster_high)
-{
-    if (version == FATVersion::FAT32) {
-        return (static_cast<u32>(first_cluster_high) << 16) | first_cluster_low;
+    VERIFY(m_inode_lock.is_locked());
+    if (fs().m_fat_version == FATVersion::FAT32) {
+        return (static_cast<u32>(m_entry.first_cluster_high) << 16) | m_entry.first_cluster_low;
     }
     // The space occupied in a directory entry by `first_cluster_high` (0x14)
     // is reserved in FAT12/16, and may be used to store file meta-data.
     // As a result, do not include it on FAT12/16 file systems.
-    return first_cluster_low;
+    return m_entry.first_cluster_low;
 }
 
 ErrorOr<void> FATInode::allocate_and_add_cluster_to_chain()
@@ -391,7 +386,7 @@ ErrorOr<void> FATInode::allocate_and_add_cluster_to_chain()
         TRY(fs().fat_write(cluster_list->last(), allocated_cluster));
     }
 
-    cluster_list->append(allocated_cluster);
+    cluster_list->try_append(allocated_cluster).release_value_but_fixme_should_propagate_errors();
 
     return {};
 }
@@ -433,6 +428,7 @@ ErrorOr<Vector<FATEntryLocation>> FATInode::allocate_entries(u32 count)
 {
     // FIXME: This function ignores unused entries, we should make use of them
     // FIXME: If we fail anywhere here, we should make sure the end entry is at the correct location
+    VERIFY(m_inode_lock.is_locked());
 
     auto blocks = TRY(read_block_list());
     auto entries = bit_cast<FATEntry*>(blocks->data());
@@ -495,6 +491,7 @@ ErrorOr<Vector<FATEntryLocation>> FATInode::allocate_entries(u32 count)
 
 ErrorOr<size_t> FATInode::read_bytes_locked(off_t offset, size_t count, UserOrKernelBuffer& buffer, OpenFileDescription*) const
 {
+    VERIFY(m_inode_lock.is_locked());
     VERIFY(offset >= 0);
     if (offset >= m_entry.file_size)
         return 0;
@@ -532,6 +529,7 @@ ErrorOr<size_t> FATInode::read_bytes_locked(off_t offset, size_t count, UserOrKe
 
 InodeMetadata FATInode::metadata() const
 {
+    MutexLocker locker(m_inode_lock);
     auto cluster_count = ceil_div(static_cast<u64>(m_entry.file_size), fs().m_device_block_size * fs().m_parameter_block->common_bpb()->sectors_per_cluster);
     return {
         .inode = identifier(),
@@ -542,7 +540,7 @@ InodeMetadata FATInode::metadata() const
         .gid = 0,
         .link_count = 0,
         .atime = time_from_packed_dos(m_entry.last_accessed_date, { 0 }),
-        .ctime = time_from_packed_dos(m_entry.creation_date, m_entry.creation_time),
+        .ctime = time_from_packed_dos(m_entry.creation_date, m_entry.creation_time) + Duration::from_milliseconds(m_entry.creation_time_seconds * 10),
         .mtime = time_from_packed_dos(m_entry.modification_date, m_entry.modification_time),
         .dtime = {},
         .block_count = cluster_count * fs().m_parameter_block->common_bpb()->sectors_per_cluster,
@@ -583,6 +581,7 @@ ErrorOr<NonnullRefPtr<Inode>> FATInode::lookup(StringView name)
 
 ErrorOr<size_t> FATInode::write_bytes_locked(off_t offset, size_t size, UserOrKernelBuffer const& buffer, OpenFileDescription*)
 {
+    VERIFY(m_inode_lock.is_locked());
     dbgln_if(FAT_DEBUG, "FATInode[{}]::write_bytes_locked(): Writing size: {} offset: {}", identifier(), size, offset);
 
     u32 new_size = max(m_entry.file_size, offset + size);
@@ -620,11 +619,33 @@ ErrorOr<size_t> FATInode::write_bytes_locked(off_t offset, size_t size, UserOrKe
     return size;
 }
 
+ErrorOr<void> FATInode::fill_in_creation_time(FATEntry& entry, UnixDateTime const& timestamp)
+{
+    auto packed_date = TRY(to_packed_dos_date(timestamp));
+    auto packed_time = TRY(to_packed_dos_time(timestamp));
+
+    entry.creation_date = move(packed_date);
+    entry.creation_time = move(packed_time);
+
+    // NOTE: The "creation_time_seconds" field not only compensates for the fact that seconds are counted in intervals of two,
+    // it also adds in rudimentary support for millisecond precision, though this is limited to only two digits.
+    auto day_start_precision = days_since_epoch(entry.creation_date.year + AK::first_dos_year, entry.creation_date.month, entry.creation_date.day) * 86'400;
+    auto day_precision = entry.creation_time.hour * 60 * 60 + entry.creation_time.minute * 60 + entry.creation_time.second * 2;
+    entry.creation_time_seconds = (timestamp.truncated_milliseconds_since_epoch() - day_start_precision * 1000 - day_precision * 1000) / 10;
+    VERIFY(entry.creation_time_seconds < 200);
+
+    return {};
+}
+
 ErrorOr<NonnullRefPtr<Inode>> FATInode::create_child(StringView name, mode_t mode, dev_t, UserID, GroupID)
 {
+    MutexLocker locker(m_inode_lock);
     VERIFY(has_flag(m_entry.attributes, FATAttributes::Directory));
 
     dbgln_if(FAT_DEBUG, "FATInode[{}]::create_child(): creating inode \"{}\"", identifier(), name);
+
+    if (!Kernel::is_directory(mode) && !Kernel::is_regular_file(mode))
+        return ENOTSUP;
 
     FATEntry entry {};
 
@@ -642,22 +663,27 @@ ErrorOr<NonnullRefPtr<Inode>> FATInode::create_child(StringView name, mode_t mod
     if (mode & S_IFDIR)
         entry.attributes |= FATAttributes::Directory;
 
-    // FIXME: Set the dates
+    auto now = kgettimeofday();
+    if (auto error_or_void = fill_in_creation_time(entry, now); !error_or_void.is_error()) {
+        entry.modification_date = entry.creation_date;
+        entry.modification_time = entry.creation_time;
+        entry.last_accessed_date = entry.creation_date;
+    }
 
     Vector<FATLongFileNameEntry> lfn_entries = {};
     if (!valid_sfn)
         lfn_entries = TRY(create_lfn_entries(name, lfn_entry_checksum(entry)));
 
-    MutexLocker locker(m_inode_lock);
-
     auto entries = TRY(allocate_entries(lfn_entries.size() + 1));
-    u32 allocated_cluster = TRY(fs().allocate_cluster());
-    if (fs().m_fat_version == FATVersion::FAT32)
-        entry.first_cluster_high = allocated_cluster >> 16;
-
-    entry.first_cluster_low = allocated_cluster & 0xFFFF;
 
     if (mode & S_IFDIR) {
+        u32 allocated_cluster = TRY(fs().allocate_cluster());
+        if (fs().m_fat_version == FATVersion::FAT32)
+            entry.first_cluster_high = allocated_cluster >> 16;
+
+        entry.first_cluster_low = allocated_cluster & 0xFFFF;
+
+        // This is used for generating a directory's "." and ".." entries.
         auto create_directory_entry = [&](StringView entry_name) {
             VERIFY(entry_name.length() <= 8);
             FATEntry directory_entry {};
@@ -679,7 +705,7 @@ ErrorOr<NonnullRefPtr<Inode>> FATInode::create_child(StringView name, mode_t mod
 
         // NOTE: While setting the first cluster of the ".." entry to that of the current entry
         // is _usually_ the right thing to do, we're actually supposed to set it to 0 if we are
-        // dealing with the root directory. This isn't an issues when dealing with FAT12 or FAT16,
+        // dealing with the root directory. This isn't an issue when dealing with FAT12 or FAT16,
         // since the root directory's first cluster is always 0, but it's something to account for
         // when working with FAT32.
         switch (fs().m_fat_version) {
@@ -711,50 +737,9 @@ ErrorOr<NonnullRefPtr<Inode>> FATInode::create_child(StringView name, mode_t mod
     return TRY(FATInode::create(fs(), entry, entries[lfn_entries.size()], lfn_entries));
 }
 
-ErrorOr<void> FATInode::add_child(Inode& inode, StringView name, mode_t mode)
+ErrorOr<void> FATInode::add_child(Inode&, StringView, mode_t)
 {
-    VERIFY(has_flag(m_entry.attributes, FATAttributes::Directory));
-    VERIFY(inode.fsid() == fsid());
-
-    // FIXME: There's a lot of similar code between this function and create_child, we should try to factor out some of the common code.
-
-    dbgln_if(FAT_DEBUG, "FATInode[{}]::add_child(): appending inode {} as \"{}\"", identifier(), inode.identifier(), name);
-
-    auto entry = bit_cast<FATInode*>(&inode)->m_entry;
-
-    bool valid_sfn = SFNUtils::is_valid_sfn(name);
-
-    if (valid_sfn) {
-        TRY(encode_known_good_sfn_for(entry, name));
-    } else {
-        auto sfn = TRY(SFNUtils::create_sfn_from_lfn(name));
-        Vector<ByteBuffer> existing_sfns = TRY(collect_sfns());
-        TRY(create_unique_sfn_for(entry, move(sfn), move(existing_sfns)));
-    }
-
-    // TODO: We should set the hidden attribute if the file starts with a dot or read only (the same way Linux does this).
-    if (mode & S_IFDIR)
-        entry.attributes |= FATAttributes::Directory;
-
-    // FIXME: Set the dates
-
-    Vector<FATLongFileNameEntry> lfn_entries = {};
-    if (!valid_sfn)
-        lfn_entries = TRY(create_lfn_entries(name, lfn_entry_checksum(entry)));
-
-    MutexLocker locker(m_inode_lock);
-
-    auto entries = TRY(allocate_entries(lfn_entries.size() + 1));
-
-    // FIXME: If we fail here we should clean up the entries we wrote
-    TRY(fs().write_block(entries[lfn_entries.size()].block, UserOrKernelBuffer::for_kernel_buffer(bit_cast<u8*>(&entry)), sizeof(FATEntry), entries[lfn_entries.size()].entry * sizeof(FATEntry)));
-
-    for (u32 i = 0; i < lfn_entries.size(); i++) {
-        auto location = entries[lfn_entries.size() - i - 1];
-        TRY(fs().write_block(location.block, UserOrKernelBuffer::for_kernel_buffer(bit_cast<u8*>(&lfn_entries[i])), sizeof(FATLongFileNameEntry), location.entry * sizeof(FATLongFileNameEntry)));
-    }
-
-    return {};
+    return ENOTSUP;
 }
 
 ErrorOr<void> FATInode::remove_child_impl(StringView name, FreeClusters free_clusters)
@@ -805,19 +790,26 @@ ErrorOr<void> FATInode::remove_child_impl(StringView name, FreeClusters free_clu
                 for (auto const& lfn_entry_location : lfn_entry_locations)
                     TRY(fs().write_block(lfn_entry_location.block, UserOrKernelBuffer::for_kernel_buffer(bit_cast<u8*>(&unused_entry)), sizeof(FATEntry), lfn_entry_location.entry * sizeof(FATEntry)));
 
-                if (name == "."sv || name == ".."sv || free_clusters == FreeClusters::No)
-                    return {};
-
                 u32 entry_first_cluster = entry->first_cluster_low;
                 if (fs().m_fat_version == FATVersion::FAT32)
                     entry_first_cluster |= (static_cast<u32>(entry->first_cluster_high) << 16);
 
-                auto cluster_list = TRY(compute_cluster_list(fs(), entry_first_cluster));
+                // Note that it isn't valid to set the first cluster to an end of chain marker,
+                // so if we do find an entry that does that, we just skip freeing any clusters
+                // to avoid doing needless damage.
+                if (name == "."sv || name == ".."sv || free_clusters == FreeClusters::No || entry_first_cluster <= 1 || entry_first_cluster >= fs().end_of_chain_marker())
+                    return {};
 
-                for (auto cluster : cluster_list)
-                    TRY(fs().fat_write(cluster, 0));
+                u32 cluster = entry_first_cluster;
+                u32 clusters_read = 0;
+                while (cluster < fs().end_of_chain_marker()) {
+                    u32 current_cluster = cluster;
+                    cluster = TRY(fs().fat_read(cluster));
+                    TRY(fs().fat_write(current_cluster, 0));
+                    ++clusters_read;
+                }
 
-                TRY(fs().notify_clusters_freed(cluster_list.first(), cluster_list.size()));
+                TRY(fs().notify_clusters_freed(entry_first_cluster, clusters_read));
 
                 return {};
             }
@@ -848,6 +840,8 @@ ErrorOr<void> FATInode::chown(UserID, GroupID)
 
 ErrorOr<void> FATInode::zero_data(u64 offset, u64 count)
 {
+    VERIFY(m_inode_lock.is_locked());
+
     Vector<u8> zero_buffer;
     TRY(zero_buffer.try_resize(fs().m_device_block_size));
 
@@ -925,6 +919,8 @@ ErrorOr<void> FATInode::truncate_locked(u64 size)
 
 ErrorOr<void> FATInode::flush_metadata()
 {
+    MutexLocker locker(m_inode_lock);
+
     if (m_inode_metadata_location.block == 0)
         return {};
 
@@ -936,9 +932,36 @@ ErrorOr<void> FATInode::flush_metadata()
     return {};
 }
 
-ErrorOr<void> FATInode::update_timestamps(Optional<UnixDateTime>, Optional<UnixDateTime>, Optional<UnixDateTime>)
+ErrorOr<void> FATInode::update_timestamps(Optional<UnixDateTime> atime, Optional<UnixDateTime> ctime, Optional<UnixDateTime> mtime)
 {
-    // FIXME: Implement FATInode::update_timestamps
+    MutexLocker locker(m_inode_lock);
+
+    Optional<DOSPackedDate> packed_last_accessed_date;
+    Optional<DOSPackedDate> packed_modified_date;
+    Optional<DOSPackedTime> packed_modified_time;
+
+    if (atime.has_value())
+        packed_last_accessed_date = TRY(to_packed_dos_date(atime.value()));
+
+    if (mtime.has_value()) {
+        packed_modified_date = TRY(to_packed_dos_date(mtime.value()));
+        packed_modified_time = TRY(to_packed_dos_time(mtime.value()));
+    }
+
+    // NOTE: This is initialized after we've parsed everything else
+    // to ensure that no changes will be made if we fail to parse
+    // any of the arguments.
+    if (ctime.has_value())
+        TRY(fill_in_creation_time(m_entry, ctime.value()));
+
+    if (atime.has_value())
+        m_entry.last_accessed_date = packed_last_accessed_date.release_value();
+
+    if (mtime.has_value()) {
+        m_entry.modification_date = packed_modified_date.release_value();
+        m_entry.modification_time = packed_modified_time.release_value();
+    }
+
     return {};
 }
 

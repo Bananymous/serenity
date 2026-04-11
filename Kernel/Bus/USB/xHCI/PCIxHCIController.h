@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2024, Idan Horowitz <idan.horowitz@serenityos.org>
- * Copyright (c) 2025, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2025, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,7 +11,7 @@
 #include <Kernel/Bus/PCI/Device.h>
 #include <Kernel/Bus/USB/xHCI/xHCIController.h>
 
-namespace Kernel::USB {
+namespace Kernel::USB::xHCI {
 
 class PCIxHCIController final
     : public xHCIController
@@ -28,7 +28,7 @@ private:
 
     // ^xHCIController
     virtual bool using_message_signalled_interrupts() const override { return m_using_message_signalled_interrupts; }
-    virtual ErrorOr<NonnullOwnPtr<GenericInterruptHandler>> create_interrupter(u16 interrupter_id) override;
+    virtual ErrorOr<OwnPtr<GenericInterruptHandler>> create_interrupter(u16 interrupter_id) override;
     virtual ErrorOr<void> write_dmesgln_prefix(StringBuilder& builder) const override
     {
         TRY(builder.try_appendff("{}: {}: "sv, device_name(), device_identifier().address()));

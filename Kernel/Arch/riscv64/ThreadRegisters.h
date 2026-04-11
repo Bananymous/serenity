@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2023, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -59,6 +59,9 @@ struct ThreadRegisters {
         sstatus.SPIE = 1;
 
         sstatus.FS = RISCV64::CSR::SSTATUS::FloatingPointStatus::Initial;
+
+        if (Processor::current().has_feature(CPUFeature::V))
+            sstatus.VS = RISCV64::CSR::SSTATUS::VectorStatus::Initial;
 
         sstatus.SPP = is_kernel_process ? RISCV64::CSR::SSTATUS::PrivilegeMode::Supervisor : RISCV64::CSR::SSTATUS::PrivilegeMode::User;
         sstatus.UXL = RISCV64::CSR::SSTATUS::XLEN::Bits64;

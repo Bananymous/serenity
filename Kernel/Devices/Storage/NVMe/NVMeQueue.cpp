@@ -5,6 +5,7 @@
  */
 
 #include <Kernel/Arch/Delay.h>
+#include <Kernel/Arch/MemoryFences.h>
 #include <Kernel/Devices/Storage/NVMe/NVMeController.h>
 #include <Kernel/Devices/Storage/NVMe/NVMeInterruptQueue.h>
 #include <Kernel/Devices/Storage/NVMe/NVMePollQueue.h>
@@ -82,7 +83,7 @@ u32 NVMeQueue::process_cq()
                 dmesgln("Bogus cmd id: {}", cmdid);
                 VERIFY_NOT_REACHED();
             }
-            complete_current_request(cmdid, status);
+            complete_current_request_impl(cmdid, status, requests);
             update_cqe_head();
         }
     });
@@ -109,37 +110,42 @@ void NVMeQueue::submit_sqe(NVMeSubmission& sub)
     update_sq_doorbell();
 }
 
+void NVMeQueue::complete_current_request_impl(u16 cmdid, u16 status, HashMap<u16, NVMeIO>& requests)
+{
+    auto& request_pdu = requests.get(cmdid).release_value();
+    auto current_request = request_pdu.request;
+    AsyncDeviceRequest::RequestResult req_result = AsyncDeviceRequest::Success;
+
+    ScopeGuard guard = [&req_result, status, &request_pdu] {
+        if (request_pdu.request)
+            request_pdu.request->complete(req_result);
+        if (request_pdu.end_io_handler)
+            request_pdu.end_io_handler(status);
+        request_pdu.clear();
+    };
+
+    // There can be submission without any request associated with it such as with
+    // admin queue commands during init. If there is no request, we are done
+    if (!current_request)
+        return;
+
+    if (status) {
+        req_result = AsyncBlockDeviceRequest::Failure;
+        return;
+    }
+
+    if (current_request->request_type() == AsyncBlockDeviceRequest::RequestType::Read) {
+        if (auto result = current_request->write_to_buffer(current_request->buffer(), m_rw_dma_region->vaddr().as_ptr(), current_request->buffer_size()); result.is_error()) {
+            req_result = AsyncBlockDeviceRequest::MemoryFault;
+            return;
+        }
+    }
+}
+
 void NVMeQueue::complete_current_request(u16 cmdid, u16 status)
 {
     m_requests.with([this, cmdid, status](auto& requests) {
-        auto& request_pdu = requests.get(cmdid).release_value();
-        auto current_request = request_pdu.request;
-        AsyncDeviceRequest::RequestResult req_result = AsyncDeviceRequest::Success;
-
-        ScopeGuard guard = [&req_result, status, &request_pdu] {
-            if (request_pdu.request)
-                request_pdu.request->complete(req_result);
-            if (request_pdu.end_io_handler)
-                request_pdu.end_io_handler(status);
-            request_pdu.clear();
-        };
-
-        // There can be submission without any request associated with it such as with
-        // admin queue commands during init. If there is no request, we are done
-        if (!current_request)
-            return;
-
-        if (status) {
-            req_result = AsyncBlockDeviceRequest::Failure;
-            return;
-        }
-
-        if (current_request->request_type() == AsyncBlockDeviceRequest::RequestType::Read) {
-            if (auto result = current_request->write_to_buffer(current_request->buffer(), m_rw_dma_region->vaddr().as_ptr(), current_request->buffer_size()); result.is_error()) {
-                req_result = AsyncBlockDeviceRequest::MemoryFault;
-                return;
-            }
-        }
+        complete_current_request_impl(cmdid, status, requests);
     });
 }
 
@@ -155,7 +161,7 @@ u16 NVMeQueue::submit_sync_sqe(NVMeSubmission& sub)
     });
     submit_sqe(sub);
 
-    // FIXME: Only sync submissions (usually used for admin commands) use a WaitQueue based IO. Eventually we need to
+    // FIXME: Only sync submissions (usually used for admin commands) use a DeprecatedWaitQueue based IO. Eventually we need to
     //  move this logic into the block layer instead of sprinkling them in the driver code.
     m_sync_wait_queue.wait_forever("NVMe sync submit"sv);
     return cmd_status;
@@ -176,7 +182,7 @@ void NVMeQueue::read(AsyncBlockDeviceRequest& request, u16 nsid, u64 index, u32 
         requests.set(sub.cmdid, { request, nullptr });
     });
 
-    full_memory_barrier();
+    full_memory_fence();
     submit_sqe(sub);
 }
 
@@ -201,7 +207,7 @@ void NVMeQueue::write(AsyncBlockDeviceRequest& request, u16 nsid, u64 index, u32
         return;
     }
 
-    full_memory_barrier();
+    full_memory_fence();
     submit_sqe(sub);
 }
 

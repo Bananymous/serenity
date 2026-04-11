@@ -8,7 +8,7 @@ Everyone is welcome to work on the project, and while we have lots of fun, it's 
 
 ## Communication
 
-Join our Discord server: [SerenityOS Discord](https://discord.gg/serenityos)
+Join our Discord server: [SerenityOS Discord](https://serenityos.org/discord)
 
 ## Issue policy
 
@@ -43,8 +43,8 @@ Nobody is perfect, and sometimes we mess things up. That said, here are some goo
 
 **Do:**
 
--   Write in idiomatic SerenityOS C++23, using the `AK` containers in all code.
--   Conform to the project coding style found in [CodingStyle.md](https://github.com/SerenityOS/serenity/blob/master/Documentation/CodingStyle.md). Use `clang-format` (version 18 or later) to automatically format C++ files. See [AdvancedBuildInstructions.md](https://github.com/SerenityOS/serenity/blob/master/Documentation/AdvancedBuildInstructions.md#clang-format-updates) for instructions on how to get an up-to-date version if your OS distribution does not ship clang-format-18.
+-   Write in idiomatic SerenityOS C++26, using the `AK` containers in all code.
+-   Conform to the project coding style found in [CodingStyle.md](https://github.com/SerenityOS/serenity/blob/master/Documentation/CodingStyle.md). Use `clang-format` (version 20 or later) to automatically format C++ files. See [AdvancedBuildInstructions.md](https://github.com/SerenityOS/serenity/blob/master/Documentation/AdvancedBuildInstructions.md#clang-format-updates) for instructions on how to get an up-to-date version if your OS distribution does not ship clang-format-20.
 -   Choose expressive variable, function and class names. Make it as obvious as possible what the code is doing.
 -   Split your changes into separate, atomic commits (i.e. A commit per feature or fix, where the build, tests and the system are all functioning).
 -   Make sure your commits are rebased on the master branch.
@@ -64,7 +64,7 @@ Nobody is perfect, and sometimes we mess things up. That said, here are some goo
 
 **Don't:**
 
--   Submit code that's incompatible with the project licence (2-clause BSD.)
+-   Submit code that's incompatible with the project license (2-clause BSD.)
 -   Touch anything outside the stated scope of the PR.
 -   Iterate excessively on your design across multiple commits.
 -   Use weasel-words like "refactor" or "fix" to avoid explaining what's being changed.
@@ -92,11 +92,10 @@ Ping them right away if it's something urgent! If it's less urgent, advertise yo
 -   [@AtkinsSJ](https://github.com/AtkinsSJ)
 -   [@BertalanD](https://github.com/BertalanD)
 -   [@GMTA](https://github.com/gmta)
--   [@kalenikaliaksandr](https://github.com/kalenikaliaksandr)
 -   [@Lubrsi](https://github.com/Lubrsi)
+-   [@LucasChollet](https://github.com/LucasChollet)
 -   [@nico](https://github.com/nico)
 -   [@spholz](https://github.com/spholz)
--   [@tcl3](https://github.com/tcl3)
 -   [@timschumi](https://github.com/timschumi)
 -   [@trflynn89](https://github.com/trflynn89)
 

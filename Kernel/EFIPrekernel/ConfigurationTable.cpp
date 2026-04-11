@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2024, Sönke Holz <sholz8530@gmail.com>
+ * Copyright (c) 2024, Sönke Holz <soenke.holz@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <Kernel/Arch/x86_64/Firmware/PCBIOS/DMI/Definitions.h>
 #include <Kernel/EFIPrekernel/ConfigurationTable.h>
 #include <Kernel/EFIPrekernel/Globals.h>
+#include <Kernel/Firmware/SMBIOS/Definitions.h>
 
 #include <LibDeviceTree/FlattenedDeviceTree.h>
 
